@@ -1,6 +1,8 @@
-# Forecast Tool
+# TSC Headcount
 
-A desktop application for managing employee project allocations and forecasting hours.
+Desktop application for managing employee project allocations, forecasting hours, and planned staffing changes.
+
+This project is a renamed, independently maintained fork of [Forecast-Tool](https://github.com/jbishop216/Forecast-Tool) (original author: jbishop216).
 
 ## Features
 
@@ -31,25 +33,25 @@ A desktop application for managing employee project allocations and forecasting 
 ## Technical Details
 
 - Built with Python 3.11 and Tkinter
-- SQLite database for data storage
+- SQLite database for data storage (`forecast_tool.db` in the working directory)
 - SQLAlchemy ORM for database interaction
 - Matplotlib for data visualization
 - OpenPyXL for Excel export
 
 ## Requirements
 
-```txt
-sqlalchemy
-matplotlib
-openpyxl
+See `requirements.txt`. Install with:
+
+```bash
+pip install -r requirements.txt
 ```
 
 ## Installation
 
 1. Clone this repository:
    ```bash
-   git clone <repository-url>
-   cd forecast-tool
+   git clone https://github.com/n0m4d27/TSC_Headcount.git
+   cd TSC_Headcount
    ```
 
 2. Install required packages:
@@ -57,10 +59,34 @@ openpyxl
    pip install -r requirements.txt
    ```
 
-3. Initialize the database:
+3. Run the application (creates the SQLite database on first run if needed):
    ```bash
    python app_tkinter.py
    ```
+
+## Publish your own copy to GitHub (n0m4d27)
+
+On [github.com/new](https://github.com/new), create a repository named **`TSC_Headcount`** under account **n0m4d27**. Do **not** add a README, `.gitignore`, or license (keep the repo empty).
+
+From this project folder, with [Git for Windows](https://git-scm.com/download/win) available in your terminal:
+
+```powershell
+cd path\to\TSC_Headcount
+git remote rename origin upstream
+git remote add origin https://github.com/n0m4d27/TSC_Headcount.git
+git push -u origin main
+```
+
+- **`upstream`** keeps a reference to `https://github.com/jbishop216/Forecast-Tool` so you can pull upstream changes if you want.
+- If you prefer not to keep the old remote, skip `rename` and use `git remote set-url origin https://github.com/n0m4d27/TSC_Headcount.git` instead.
+
+Authenticate with GitHub when prompted (HTTPS personal access token, not account password), or use SSH: `git@github.com:n0m4d27/TSC_Headcount.git`.
+
+If this working copy already has a remote named **`tsc-headcount`** pointing at that URL, you can push with:
+
+```powershell
+git push -u tsc-headcount main
+```
 
 ## Usage
 
@@ -75,11 +101,13 @@ openpyxl
 ## Mid-Month Employee Changes
 
 The tool handles mid-month employee changes based on GA01 weeks:
+
 - If changes (hiring, termination, conversion) occur after the 2nd GA01 week, employees are counted for the entire month
 - If changes occur before the end of the 2nd GA01 week, they are prorated accordingly
 
 ## Settings
 
 Access the Settings dialog from the File menu to configure:
+
 - FTE weekly hours (default: 34.5)
-- Contractor weekly hours (default: 39.0) 
+- Contractor weekly hours (default: 39.0)

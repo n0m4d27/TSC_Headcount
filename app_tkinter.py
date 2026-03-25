@@ -2144,7 +2144,12 @@ class PlannedChangesTab(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         
-        # Create toolbar
+        self._record_id = None
+        self._pc_employee_id = None
+        self._pc_employees = {}
+        self._pc_canvas = None
+        self._suppress_tree_select = False
+        
         toolbar = ttk.Frame(self)
         toolbar.pack(fill=tk.X, padx=5, pady=5)
         
@@ -2153,14 +2158,13 @@ class PlannedChangesTab(ttk.Frame):
         ttk.Button(toolbar, text="Delete Change", command=self.delete_change).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="Refresh", command=self.load_changes).pack(side=tk.LEFT, padx=2)
         
-        # Year filter
         year_frame = ttk.Frame(toolbar)
         year_frame.pack(side=tk.RIGHT, padx=5)
         
         ttk.Label(year_frame, text="Year:").pack(side=tk.LEFT, padx=2)
         self.year_var = tk.StringVar(value=str(datetime.now().year))
         year_combo = ttk.Combobox(
-            year_frame, 
+            year_frame,
             textvariable=self.year_var,
             values=[str(y) for y in range(datetime.now().year - 2, datetime.now().year + 5)],
             width=6,
@@ -2169,20 +2173,28 @@ class PlannedChangesTab(ttk.Frame):
         year_combo.pack(side=tk.LEFT, padx=2)
         year_combo.bind("<<ComboboxSelected>>", lambda e: self.load_changes())
         
-        # Create treeview with scrollbar
-        self.tree_frame = ttk.Frame(self)
-        self.tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        self.paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.tree = ttk.Treeview(self.tree_frame, columns=(
-            "id", "description", "change_type", "effective_date", "name", "team", "manager_code", "status"
-        ), show="headings")
+        left_frame = ttk.Frame(self.paned)
+        self.paned.add(left_frame, weight=2)
         
-        # Add scrollbar
-        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        self.tree_frame = ttk.Frame(left_frame)
+        self.tree_frame.pack(fill=tk.BOTH, expand=True)
+        
+        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree_yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.configure(yscrollcommand=scrollbar.set)
         
-        # Configure columns
+        self.tree = ttk.Treeview(
+            self.tree_frame,
+            columns=(
+                "id", "description", "change_type", "effective_date", "name", "team", "manager_code", "status"
+            ),
+            show="headings",
+            yscrollcommand=scrollbar.set,
+        )
+        self.tree.pack(fill=tk.BOTH, expand=True)
+        
         self.tree.heading("id", text="ID")
         self.tree.heading("description", text="Description")
         self.tree.heading("change_type", text="Change Type")
@@ -2192,7 +2204,6 @@ class PlannedChangesTab(ttk.Frame):
         self.tree.heading("manager_code", text="Manager")
         self.tree.heading("status", text="Status")
         
-        # Set column widths
         self.tree.column("id", width=50)
         self.tree.column("description", width=200)
         self.tree.column("change_type", width=100)
@@ -2202,15 +2213,389 @@ class PlannedChangesTab(ttk.Frame):
         self.tree.column("manager_code", width=100)
         self.tree.column("status", width=80)
         
-        self.tree.pack(fill=tk.BOTH, expand=True)
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         
-        # Load changes
+        right_outer = ttk.Frame(self.paned, padding=(8, 0, 0, 0))
+        self.paned.add(right_outer, weight=1)
+        
+        self._build_detail_pane(right_outer)
+        
+        self.bind("<Destroy>", self._pc_on_destroy)
+        
+        self.after_idle(self._pc_set_initial_sash)
         self.load_changes()
+        self._clear_detail_form(new_mode=True)
+    
+    def tree_yview(self, *args):
+        self.tree.yview(*args)
+    
+    def _pc_set_initial_sash(self):
+        try:
+            self.paned.sashpos(0, 560)
+        except tk.TclError:
+            pass
+    
+    def _pc_on_destroy(self, event):
+        if event.widget is not self:
+            return
+        try:
+            if self._pc_canvas is not None:
+                self._pc_canvas.unbind_all("<MouseWheel>")
+        except tk.TclError:
+            pass
+    
+    def _build_detail_pane(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+        
+        self.detail_title_var = tk.StringVar(value="Planned change")
+        ttk.Label(
+            parent,
+            textvariable=self.detail_title_var,
+            font=("Helvetica", 11, "bold"),
+        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
+        
+        self._pc_canvas = tk.Canvas(parent, highlightthickness=0)
+        vsb = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self._pc_canvas.yview)
+        self._pc_canvas.configure(yscrollcommand=vsb.set)
+        
+        form = ttk.Frame(self._pc_canvas, padding=(0, 0, 6, 0))
+        inner_win = self._pc_canvas.create_window((0, 0), window=form, anchor=tk.NW)
+        
+        def sync_scroll(_event=None):
+            self._pc_canvas.configure(scrollregion=self._pc_canvas.bbox("all"))
+        
+        def on_canvas_cfg(event):
+            self._pc_canvas.itemconfigure(inner_win, width=event.width)
+        
+        form.bind("<Configure>", sync_scroll)
+        self._pc_canvas.bind("<Configure>", on_canvas_cfg)
+        
+        self._pc_canvas.grid(row=1, column=0, sticky=tk.NSEW)
+        vsb.grid(row=1, column=1, sticky=tk.NS)
+        
+        def on_mw(event):
+            if self._pc_canvas.winfo_containing(event.x_root, event.y_root):
+                self._pc_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                return "break"
+        
+        self._pc_canvas.bind("<Enter>", lambda _e: self._pc_canvas.bind_all("<MouseWheel>", on_mw))
+        self._pc_canvas.bind("<Leave>", lambda _e: self._pc_canvas.unbind_all("<MouseWheel>"))
+        
+        form.columnconfigure(1, weight=1)
+        
+        ttk.Label(form, text="Description:").grid(row=0, column=0, sticky=tk.W, pady=4)
+        self.description_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.description_var, width=36).grid(row=0, column=1, sticky=tk.EW, pady=4)
+        
+        ttk.Label(form, text="Change Type:").grid(row=1, column=0, sticky=tk.W, pady=4)
+        self.change_type_var = tk.StringVar()
+        change_types = [ct.value for ct in ChangeType]
+        self.change_type_combo = ttk.Combobox(
+            form, textvariable=self.change_type_var, values=change_types, width=18, state="readonly"
+        )
+        self.change_type_combo.grid(row=1, column=1, sticky=tk.W, pady=4)
+        self.change_type_combo.bind("<<ComboboxSelected>>", self._pc_on_change_type_selected)
+        
+        ttk.Label(form, text="Effective Date (mm/dd/yy):").grid(row=2, column=0, sticky=tk.W, pady=4)
+        self.effective_date_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.effective_date_var, width=18).grid(row=2, column=1, sticky=tk.W, pady=4)
+        
+        self.employee_selection_frame = ttk.LabelFrame(form, text="Select Employee", padding=8)
+        self.employee_selection_frame.grid(row=3, column=0, columnspan=2, pady=8, sticky=tk.EW)
+        self.employee_selection_frame.grid_remove()
+        
+        lb_frame = ttk.Frame(self.employee_selection_frame)
+        lb_frame.pack(fill=tk.BOTH, expand=True, pady=4)
+        
+        self.employee_listbox = tk.Listbox(lb_frame, height=5, width=34)
+        self.employee_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        lb_sb = ttk.Scrollbar(lb_frame, orient=tk.VERTICAL, command=self.employee_listbox.yview)
+        lb_sb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.employee_listbox.config(yscrollcommand=lb_sb.set)
+        self.employee_listbox.bind("<<ListboxSelect>>", self._pc_on_employee_selected)
+        
+        self.details_frame = ttk.LabelFrame(form, text="Employee Details", padding=8)
+        self.details_frame.grid(row=4, column=0, columnspan=2, pady=8, sticky=tk.EW)
+        
+        ttk.Label(self.details_frame, text="Name:").grid(row=0, column=0, sticky=tk.W, pady=4)
+        self.name_var = tk.StringVar()
+        self.name_entry = ttk.Entry(self.details_frame, textvariable=self.name_var, width=28)
+        self.name_entry.grid(row=0, column=1, sticky=tk.W, pady=4)
+        
+        ttk.Label(self.details_frame, text="Team:").grid(row=1, column=0, sticky=tk.W, pady=4)
+        self.team_var = tk.StringVar()
+        self.team_entry = ttk.Entry(self.details_frame, textvariable=self.team_var, width=28)
+        self.team_entry.grid(row=1, column=1, sticky=tk.W, pady=4)
+        
+        ttk.Label(self.details_frame, text="Manager Code:").grid(row=2, column=0, sticky=tk.W, pady=4)
+        self.manager_code_var = tk.StringVar()
+        self.manager_code_entry = ttk.Entry(self.details_frame, textvariable=self.manager_code_var, width=18)
+        self.manager_code_entry.grid(row=2, column=1, sticky=tk.W, pady=4)
+        
+        ttk.Label(self.details_frame, text="Cost Center:").grid(row=3, column=0, sticky=tk.W, pady=4)
+        self.cost_center_var = tk.StringVar()
+        self.cost_center_entry = ttk.Entry(self.details_frame, textvariable=self.cost_center_var, width=18)
+        self.cost_center_entry.grid(row=3, column=1, sticky=tk.W, pady=4)
+        
+        ttk.Label(self.details_frame, text="Employment Type:").grid(row=4, column=0, sticky=tk.W, pady=4)
+        self.employment_type_var = tk.StringVar()
+        employment_types = [et.value for et in EmploymentType]
+        self.employment_type_combo = ttk.Combobox(
+            self.details_frame, textvariable=self.employment_type_var, values=employment_types, width=18
+        )
+        self.employment_type_combo.grid(row=4, column=1, sticky=tk.W, pady=4)
+        
+        ttk.Label(form, text="Status:").grid(row=5, column=0, sticky=tk.W, pady=4)
+        self.status_var = tk.StringVar(value="Planned")
+        statuses = ["Planned", "In Progress", "Completed", "Cancelled"]
+        ttk.Combobox(form, textvariable=self.status_var, values=statuses, width=18, state="readonly").grid(
+            row=5, column=1, sticky=tk.W, pady=4
+        )
+        
+        button_bar = ttk.Frame(parent)
+        button_bar.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
+        ttk.Button(button_bar, text="Save", command=self._save_detail, width=10).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(button_bar, text="Cancel", command=self._cancel_detail, width=10).pack(side=tk.RIGHT, padx=4)
+    
+    def _clear_detail_form(self, new_mode=False):
+        self._record_id = None
+        self._pc_employee_id = None
+        self.detail_title_var.set("New planned change" if new_mode else "Planned change")
+        self.description_var.set("")
+        self.change_type_var.set("")
+        self.effective_date_var.set(datetime.now().strftime("%m/%d/%y"))
+        self.name_var.set("")
+        self.team_var.set("")
+        self.manager_code_var.set("")
+        self.cost_center_var.set("")
+        self.employment_type_var.set("")
+        self.status_var.set("Planned")
+        self.employee_selection_frame.grid_remove()
+        for w in (self.name_entry, self.team_entry, self.manager_code_entry, self.cost_center_entry):
+            w.config(state="normal")
+        self.employment_type_combo.config(state="normal")
+    
+    def _apply_change_to_form(self, change):
+        self._record_id = change.id
+        self._pc_employee_id = change.employee_id
+        self.detail_title_var.set(f"Planned change #{change.id}")
+        self.description_var.set(change.description or "")
+        self.change_type_var.set(change.change_type or "")
+        self.effective_date_var.set(
+            change.effective_date.strftime("%m/%d/%y") if change.effective_date else datetime.now().strftime("%m/%d/%y")
+        )
+        self.name_var.set(change.name or "")
+        self.team_var.set(change.team or "")
+        self.manager_code_var.set(change.manager_code or "")
+        self.cost_center_var.set(change.cost_center or "")
+        self.employment_type_var.set(change.employment_type or "")
+        self.status_var.set(change.status or "Planned")
+        
+        if change.change_type in (ChangeType.CONVERSION.value, ChangeType.TERMINATION.value):
+            self.employee_selection_frame.grid()
+            self._pc_load_employees()
+            if change.employee_id:
+                self._pc_load_employee_details(change.employee_id)
+        else:
+            self.employee_selection_frame.grid_remove()
+            for w in (self.name_entry, self.team_entry, self.manager_code_entry, self.cost_center_entry):
+                w.config(state="normal")
+            self.employment_type_combo.config(state="normal")
+    
+    def _load_change_by_id(self, change_id):
+        session = get_session()
+        try:
+            change = session.query(PlannedChange).filter(PlannedChange.id == change_id).first()
+            if change:
+                self._apply_change_to_form(change)
+            else:
+                messagebox.showerror("Error", "Planned change not found.")
+                self._clear_detail_form(new_mode=True)
+        finally:
+            session.close()
+    
+    def _on_tree_select(self, _event=None):
+        if self._suppress_tree_select:
+            return
+        selected = self.tree.selection()
+        if not selected:
+            return
+        change_id = self.tree.item(selected[0])["values"][0]
+        self._load_change_by_id(change_id)
+    
+    def _pc_on_change_type_selected(self, _event=None):
+        change_type = self.change_type_var.get()
+        if change_type in (ChangeType.CONVERSION.value, ChangeType.TERMINATION.value):
+            self.employee_selection_frame.grid()
+            self._pc_load_employees()
+        else:
+            self.employee_selection_frame.grid_remove()
+            self._pc_employee_id = None
+            self.name_var.set("")
+            self.team_var.set("")
+            self.manager_code_var.set("")
+            self.cost_center_var.set("")
+            self.employment_type_var.set("")
+            for w in (self.name_entry, self.team_entry, self.manager_code_entry, self.cost_center_entry):
+                w.config(state="normal")
+            self.employment_type_combo.config(state="normal")
+    
+    def _pc_load_employees(self):
+        try:
+            self.employee_listbox.delete(0, tk.END)
+            self._pc_employees = {}
+            session = get_session()
+            employees = session.query(Employee).all()
+            session.close()
+            for emp in employees:
+                self.employee_listbox.insert(tk.END, f"{emp.name} - {emp.manager_code} ({emp.employment_type})")
+                idx = self.employee_listbox.size() - 1
+                self._pc_employees[idx] = emp
+                if self._pc_employee_id and emp.id == self._pc_employee_id:
+                    self.employee_listbox.selection_set(idx)
+                    self.employee_listbox.see(idx)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load employees: {str(e)}")
+    
+    def _pc_on_employee_selected(self, _event=None):
+        sel = self.employee_listbox.curselection()
+        if not sel:
+            return
+        emp = self._pc_employees.get(sel[0])
+        if emp:
+            self._pc_employee_id = emp.id
+            self._pc_load_employee_details(emp.id)
+    
+    def _pc_load_employee_details(self, employee_id):
+        try:
+            session = get_session()
+            employee = session.query(Employee).filter(Employee.id == employee_id).first()
+            session.close()
+            if not employee:
+                return
+            self.name_var.set(employee.name)
+            self.team_var.set("")
+            self.manager_code_var.set(employee.manager_code)
+            self.cost_center_var.set(employee.cost_center)
+            self.employment_type_var.set(employee.employment_type)
+            for w in (self.name_entry, self.team_entry, self.manager_code_entry, self.cost_center_entry):
+                w.config(state="readonly")
+            self.employment_type_combo.config(state="readonly")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load employee details: {str(e)}")
+    
+    def _collect_detail_payload(self):
+        if not self.description_var.get().strip():
+            raise ValueError("Description is required")
+        if not self.change_type_var.get():
+            raise ValueError("Change Type is required")
+        if not self.effective_date_var.get().strip():
+            raise ValueError("Effective Date is required")
+        if not self.status_var.get():
+            raise ValueError("Status is required")
+        if self.change_type_var.get() in (ChangeType.CONVERSION.value, ChangeType.TERMINATION.value) and not self._pc_employee_id:
+            raise ValueError("Please select an employee for termination or conversion")
+        try:
+            effective_date = datetime.strptime(self.effective_date_var.get(), "%m/%d/%y").date()
+        except ValueError:
+            raise ValueError("Invalid Effective Date format. Use MM/DD/YY.")
+        return {
+            "description": self.description_var.get().strip(),
+            "change_type": self.change_type_var.get(),
+            "effective_date": effective_date,
+            "name": self.name_var.get().strip(),
+            "team": self.team_var.get().strip(),
+            "manager_code": self.manager_code_var.get().strip(),
+            "cost_center": self.cost_center_var.get().strip(),
+            "employment_type": self.employment_type_var.get(),
+            "status": self.status_var.get(),
+            "employee_id": self._pc_employee_id,
+        }
+    
+    def _save_detail(self):
+        try:
+            data = self._collect_detail_payload()
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+            return
+        
+        try:
+            session = get_session()
+            if self._record_id is None:
+                change = PlannedChange(
+                    description=data["description"],
+                    change_type=data["change_type"],
+                    effective_date=data["effective_date"],
+                    name=data["name"],
+                    team=data["team"],
+                    manager_code=data["manager_code"],
+                    cost_center=data["cost_center"],
+                    employment_type=data["employment_type"],
+                    status=data["status"],
+                )
+                if data.get("employee_id"):
+                    change.employee_id = data["employee_id"]
+                session.add(change)
+                session.commit()
+                new_id = change.id
+                session.close()
+                self.load_changes()
+                self._select_tree_row_by_id(new_id)
+                messagebox.showinfo("Success", "Planned change added successfully.")
+            else:
+                change = session.query(PlannedChange).filter(PlannedChange.id == self._record_id).first()
+                if not change:
+                    session.close()
+                    messagebox.showerror("Error", "Planned change not found.")
+                    return
+                change.description = data["description"]
+                change.change_type = data["change_type"]
+                change.effective_date = data["effective_date"]
+                change.name = data["name"]
+                change.team = data["team"]
+                change.manager_code = data["manager_code"]
+                change.cost_center = data["cost_center"]
+                change.employment_type = data["employment_type"]
+                change.status = data["status"]
+                if data.get("employee_id"):
+                    change.employee_id = data["employee_id"]
+                else:
+                    change.employee_id = None
+                session.commit()
+                session.close()
+                self.load_changes()
+                self._select_tree_row_by_id(self._record_id)
+                messagebox.showinfo("Success", "Planned change updated successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save planned change: {str(e)}")
+    
+    def _select_tree_row_by_id(self, change_id):
+        self._suppress_tree_select = True
+        try:
+            for item in self.tree.get_children():
+                if self.tree.item(item)["values"][0] == change_id:
+                    self.tree.selection_set(item)
+                    self.tree.see(item)
+                    self._load_change_by_id(change_id)
+                    return
+        finally:
+            self._suppress_tree_select = False
+    
+    def _cancel_detail(self):
+        if self._record_id is not None:
+            self._load_change_by_id(self._record_id)
+        else:
+            sel = self.tree.selection()
+            if sel:
+                self._on_tree_select()
+            else:
+                self._clear_detail_form(new_mode=True)
     
     def load_changes(self):
         """Load planned changes from database"""
         try:
-            # Clear existing items
+            keep_id = self._record_id
             for item in self.tree.get_children():
                 self.tree.delete(item)
             
@@ -2218,130 +2603,60 @@ class PlannedChangesTab(ttk.Frame):
             year = int(self.year_var.get())
             changes = session.query(PlannedChange).filter(
                 PlannedChange.effective_date.between(
-                    datetime(year, 1, 1).date(), 
-                    datetime(year, 12, 31).date()
+                    datetime(year, 1, 1).date(),
+                    datetime(year, 12, 31).date(),
                 )
             ).all()
             
-            # For alternating row colors
             count = 0
-            
             for change in changes:
-                item_id = self.tree.insert("", tk.END, values=(
-                    change.id,
-                    change.description,
-                    change.change_type,
-                    change.effective_date.strftime("%m/%d/%y") if change.effective_date else "",
-                    change.name or "",
-                    change.team or "",
-                    change.manager_code or "",
-                    change.status
-                ))
-                
-                # Apply alternating row colors
-                if count % 2 == 1:
-                    self.tree.item(item_id, tags=('evenrow',))
-                else:
-                    self.tree.item(item_id, tags=('oddrow',))
+                item_id = self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        change.id,
+                        change.description,
+                        change.change_type,
+                        change.effective_date.strftime("%m/%d/%y") if change.effective_date else "",
+                        change.name or "",
+                        change.team or "",
+                        change.manager_code or "",
+                        change.status,
+                    ),
+                )
+                self.tree.item(item_id, tags=("evenrow",) if count % 2 == 1 else ("oddrow",))
                 count += 1
             
-            # Configure row tags
-            self.tree.tag_configure('oddrow', background=COLORS['white'])
-            self.tree.tag_configure('evenrow', background=COLORS['table_row_alt'])
-            
+            self.tree.tag_configure("oddrow", background=COLORS["white"])
+            self.tree.tag_configure("evenrow", background=COLORS["table_row_alt"])
             session.close()
+            
+            if keep_id is not None:
+                if any(self.tree.item(i)["values"][0] == keep_id for i in self.tree.get_children()):
+                    self._select_tree_row_by_id(keep_id)
+                else:
+                    self._clear_detail_form(new_mode=True)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load planned changes: {str(e)}")
     
     def add_change(self):
-        """Add a new planned change"""
-        dialog = PlannedChangeDialog(self, None)
-        self.wait_window(dialog)
-        
-        if dialog.result:
-            try:
-                session = get_session()
-                
-                # Create new planned change
-                change = PlannedChange(
-                    description=dialog.result["description"],
-                    change_type=dialog.result["change_type"],
-                    effective_date=dialog.result["effective_date"],
-                    name=dialog.result.get("name", ""),
-                    team=dialog.result.get("team", ""),
-                    manager_code=dialog.result.get("manager_code", ""),
-                    cost_center=dialog.result.get("cost_center", ""),
-                    employment_type=dialog.result.get("employment_type", ""),
-                    status=dialog.result["status"]
-                )
-                
-                if dialog.result.get("employee_id"):
-                    change.employee_id = dialog.result["employee_id"]
-                
-                session.add(change)
-                session.commit()
-                session.close()
-                
-                # Reload changes
-                self.load_changes()
-                
-                messagebox.showinfo("Success", "Planned change added successfully.")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to add planned change: {str(e)}")
+        self._suppress_tree_select = True
+        try:
+            self.tree.selection_remove(self.tree.selection())
+        except tk.TclError:
+            pass
+        self._suppress_tree_select = False
+        self._clear_detail_form(new_mode=True)
     
     def edit_change(self):
-        """Edit selected planned change"""
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("Warning", "Please select a planned change to edit.")
             return
-        
-        try:
-            # Get ID of selected change
-            change_id = self.tree.item(selected[0])["values"][0]
-            
-            session = get_session()
-            change = session.query(PlannedChange).filter(PlannedChange.id == change_id).first()
-            
-            if not change:
-                session.close()
-                messagebox.showerror("Error", "Selected planned change not found.")
-                return
-            
-            # Create dialog
-            dialog = PlannedChangeDialog(self, change)
-            self.wait_window(dialog)
-            
-            if dialog.result:
-                # Update change
-                change.description = dialog.result["description"]
-                change.change_type = dialog.result["change_type"]
-                change.effective_date = dialog.result["effective_date"]
-                change.name = dialog.result.get("name", "")
-                change.team = dialog.result.get("team", "")
-                change.manager_code = dialog.result.get("manager_code", "")
-                change.cost_center = dialog.result.get("cost_center", "")
-                change.employment_type = dialog.result.get("employment_type", "")
-                change.status = dialog.result["status"]
-                
-                if dialog.result.get("employee_id"):
-                    change.employee_id = dialog.result["employee_id"]
-                else:
-                    change.employee_id = None
-                
-                session.commit()
-            
-            session.close()
-            
-            # Reload changes
-            self.load_changes()
-            
-            messagebox.showinfo("Success", "Planned change updated successfully.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to edit planned change: {str(e)}")
+        change_id = self.tree.item(selected[0])["values"][0]
+        self._load_change_by_id(change_id)
     
     def delete_change(self):
-        """Delete selected planned change"""
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("Warning", "Please select a planned change to delete.")
@@ -2351,305 +2666,21 @@ class PlannedChangesTab(ttk.Frame):
             return
         
         try:
-            # Get ID of selected change
             change_id = self.tree.item(selected[0])["values"][0]
-            
             session = get_session()
             change = session.query(PlannedChange).filter(PlannedChange.id == change_id).first()
-            
             if change:
                 session.delete(change)
                 session.commit()
-            
             session.close()
             
-            # Reload changes
-            self.load_changes()
+            if self._record_id == change_id:
+                self._clear_detail_form(new_mode=True)
             
+            self.load_changes()
             messagebox.showinfo("Success", "Planned change deleted successfully.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to delete planned change: {str(e)}")
-
-class PlannedChangeDialog(tk.Toplevel):
-    def __init__(self, parent, change=None):
-        super().__init__(parent)
-        self.parent = parent
-        self.change = change
-        self.result = None
-        self.employee_id = None
-        if change and change.employee_id:
-            self.employee_id = change.employee_id
-        
-        self.title("Planned Change")
-        self.geometry("550x550")
-        self.resizable(True, True)
-        
-        # Make dialog modal
-        self.transient(parent)
-        self.grab_set()
-        
-        # Create form
-        frame = ttk.Frame(self, padding="10")
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Change info
-        ttk.Label(frame, text="Description:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.description_var = tk.StringVar(value=change.description if change else "")
-        ttk.Entry(frame, textvariable=self.description_var, width=40).grid(row=0, column=1, sticky=tk.W, pady=5)
-        
-        # Change type
-        ttk.Label(frame, text="Change Type:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.change_type_var = tk.StringVar(value=change.change_type if change else "")
-        change_types = [ct.value for ct in ChangeType]
-        self.change_type_combo = ttk.Combobox(frame, textvariable=self.change_type_var, values=change_types, width=20, state="readonly")
-        self.change_type_combo.grid(row=1, column=1, sticky=tk.W, pady=5)
-        self.change_type_combo.bind("<<ComboboxSelected>>", self.on_change_type_selected)
-        
-        # Effective date
-        ttk.Label(frame, text="Effective Date (mm/dd/yy):").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.effective_date_var = tk.StringVar(value=change.effective_date.strftime("%m/%d/%y") if change and change.effective_date else datetime.now().strftime("%m/%d/%y"))
-        ttk.Entry(frame, textvariable=self.effective_date_var, width=20).grid(row=2, column=1, sticky=tk.W, pady=5)
-        
-        # Employee selection frame for termination/conversion
-        self.employee_selection_frame = ttk.LabelFrame(frame, text="Select Employee", padding=10)
-        self.employee_selection_frame.grid(row=3, column=0, columnspan=2, pady=10, sticky=tk.EW)
-        self.employee_selection_frame.grid_remove()  # Hide initially
-        
-        # Employee listbox with scrollbar
-        self.employee_listbox_frame = ttk.Frame(self.employee_selection_frame)
-        self.employee_listbox_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-        
-        self.employee_listbox = tk.Listbox(self.employee_listbox_frame, height=6, width=40)
-        self.employee_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        scrollbar = ttk.Scrollbar(self.employee_listbox_frame, orient=tk.VERTICAL, command=self.employee_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.employee_listbox.config(yscrollcommand=scrollbar.set)
-        
-        # Bind selection event
-        self.employee_listbox.bind('<<ListboxSelect>>', self.on_employee_selected)
-        
-        # Employee details frame
-        self.details_frame = ttk.LabelFrame(frame, text="Employee Details", padding=10)
-        self.details_frame.grid(row=4, column=0, columnspan=2, pady=10, sticky=tk.EW)
-        
-        # Name
-        ttk.Label(self.details_frame, text="Name:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.name_var = tk.StringVar(value=change.name if change else "")
-        self.name_entry = ttk.Entry(self.details_frame, textvariable=self.name_var, width=30)
-        self.name_entry.grid(row=0, column=1, sticky=tk.W, pady=5)
-        
-        # Team
-        ttk.Label(self.details_frame, text="Team:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.team_var = tk.StringVar(value=change.team if change else "")
-        self.team_entry = ttk.Entry(self.details_frame, textvariable=self.team_var, width=30)
-        self.team_entry.grid(row=1, column=1, sticky=tk.W, pady=5)
-        
-        # Manager code
-        ttk.Label(self.details_frame, text="Manager Code:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.manager_code_var = tk.StringVar(value=change.manager_code if change else "")
-        self.manager_code_entry = ttk.Entry(self.details_frame, textvariable=self.manager_code_var, width=20)
-        self.manager_code_entry.grid(row=2, column=1, sticky=tk.W, pady=5)
-        
-        # Cost center
-        ttk.Label(self.details_frame, text="Cost Center:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.cost_center_var = tk.StringVar(value=change.cost_center if change else "")
-        self.cost_center_entry = ttk.Entry(self.details_frame, textvariable=self.cost_center_var, width=20)
-        self.cost_center_entry.grid(row=3, column=1, sticky=tk.W, pady=5)
-        
-        # Employment type
-        ttk.Label(self.details_frame, text="Employment Type:").grid(row=4, column=0, sticky=tk.W, pady=5)
-        self.employment_type_var = tk.StringVar(value=change.employment_type if change else "")
-        employment_types = [et.value for et in EmploymentType]
-        self.employment_type_combo = ttk.Combobox(self.details_frame, textvariable=self.employment_type_var, values=employment_types, width=20)
-        self.employment_type_combo.grid(row=4, column=1, sticky=tk.W, pady=5)
-        
-        # Status
-        ttk.Label(frame, text="Status:").grid(row=5, column=0, sticky=tk.W, pady=5)
-        self.status_var = tk.StringVar(value=change.status if change else "Planned")
-        statuses = ["Planned", "In Progress", "Completed", "Cancelled"]
-        ttk.Combobox(frame, textvariable=self.status_var, values=statuses, width=20, state="readonly").grid(row=5, column=1, sticky=tk.W, pady=5)
-        
-        # Buttons
-        button_frame = ttk.Frame(frame)
-        button_frame.grid(row=6, column=0, columnspan=2, pady=10)
-        
-        ttk.Button(button_frame, text="OK", command=self.on_ok, width=10).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Cancel", command=self.on_cancel, width=10).pack(side=tk.LEFT, padx=5)
-        
-        # Center the dialog
-        self.center_on_parent()
-        
-        # Load employees for listbox if change type is already set
-        if change and change.change_type in [ChangeType.CONVERSION.value, ChangeType.TERMINATION.value]:
-            self.on_change_type_selected(None)
-            
-            # Set the selected employee if there is one
-            if change.employee_id:
-                self.employee_id = change.employee_id
-                self.load_employee_details(change.employee_id)
-    
-    def center_on_parent(self):
-        """Center the dialog on its parent window"""
-        self.update_idletasks()
-        
-        # Get parent geometry
-        parent_width = self.parent.winfo_width()
-        parent_height = self.parent.winfo_height()
-        parent_x = self.parent.winfo_rootx()
-        parent_y = self.parent.winfo_rooty()
-        
-        # Calculate position
-        width = self.winfo_width()
-        height = self.winfo_height()
-        
-        x = parent_x + (parent_width - width) // 2
-        y = parent_y + (parent_height - height) // 2
-        
-        # Set position only (preserve size)
-        self.geometry(f"+{x}+{y}")
-    
-    def on_change_type_selected(self, event):
-        """Handle change type selection"""
-        change_type = self.change_type_var.get()
-        
-        if change_type in [ChangeType.CONVERSION.value, ChangeType.TERMINATION.value]:
-            # Show employee selection for conversion/termination
-            self.employee_selection_frame.grid()
-            self.load_employees()
-        else:
-            # Hide employee selection for other change types
-            self.employee_selection_frame.grid_remove()
-            self.employee_id = None
-            
-            # Clear and enable employee detail fields
-            self.name_var.set("")
-            self.team_var.set("")
-            self.manager_code_var.set("")
-            self.cost_center_var.set("")
-            self.employment_type_var.set("")
-            
-            self.name_entry.config(state="normal")
-            self.team_entry.config(state="normal")
-            self.manager_code_entry.config(state="normal")
-            self.cost_center_entry.config(state="normal")
-            self.employment_type_combo.config(state="normal")
-    
-    def load_employees(self):
-        """Load employees into the listbox"""
-        try:
-            # Clear the listbox
-            self.employee_listbox.delete(0, tk.END)
-            
-            # Get employees from database
-            session = get_session()
-            employees = session.query(Employee).all()
-            
-            # Store employee data for later use
-            self.employees = {}
-            
-            # Add employees to listbox
-            for emp in employees:
-                display_text = f"{emp.name} - {emp.manager_code} ({emp.employment_type})"
-                self.employee_listbox.insert(tk.END, display_text)
-                # Store employee data with the index
-                index = self.employee_listbox.size() - 1
-                self.employees[index] = emp
-                
-                # Select the employee if it matches the current change
-                if self.employee_id and emp.id == self.employee_id:
-                    self.employee_listbox.selection_set(index)
-                    self.employee_listbox.see(index)
-            
-            session.close()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load employees: {str(e)}")
-    
-    def on_employee_selected(self, event):
-        """Handle employee selection from listbox"""
-        selection = self.employee_listbox.curselection()
-        if selection:
-            index = selection[0]
-            employee = self.employees[index]
-            self.employee_id = employee.id
-            self.load_employee_details(employee.id)
-    
-    def load_employee_details(self, employee_id):
-        """Load details of the selected employee"""
-        try:
-            session = get_session()
-            employee = session.query(Employee).filter(Employee.id == employee_id).first()
-            
-            if employee:
-                # Set employee details in form
-                self.name_var.set(employee.name)
-                self.team_var.set("")  # Assuming team is not in Employee model
-                self.manager_code_var.set(employee.manager_code)
-                self.cost_center_var.set(employee.cost_center)
-                self.employment_type_var.set(employee.employment_type)
-                
-                # Disable editing of employee details for termination/conversion
-                self.name_entry.config(state="readonly")
-                self.team_entry.config(state="readonly")
-                self.manager_code_entry.config(state="readonly")
-                self.cost_center_entry.config(state="readonly")
-                self.employment_type_combo.config(state="readonly")
-            
-            session.close()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load employee details: {str(e)}")
-    
-    def on_ok(self):
-        try:
-            # Validate required fields
-            if not self.description_var.get().strip():
-                raise ValueError("Description is required")
-            if not self.change_type_var.get():
-                raise ValueError("Change Type is required")
-            if not self.effective_date_var.get().strip():
-                raise ValueError("Effective Date is required")
-            if not self.status_var.get():
-                raise ValueError("Status is required")
-                
-            # Validate employee selection for termination/conversion
-            if self.change_type_var.get() in [ChangeType.CONVERSION.value, ChangeType.TERMINATION.value] and not self.employee_id:
-                raise ValueError("Please select an employee for termination or conversion")
-            
-            # Parse effective date
-            try:
-                effective_date = datetime.strptime(self.effective_date_var.get(), "%m/%d/%y").date()
-            except ValueError:
-                raise ValueError("Invalid Effective Date format. Use MM/DD/YY.")
-            
-            # Collect result
-            self.result = {
-                "description": self.description_var.get().strip(),
-                "change_type": self.change_type_var.get(),
-                "effective_date": effective_date,
-                "name": self.name_var.get().strip(),
-                "team": self.team_var.get().strip(),
-                "manager_code": self.manager_code_var.get().strip(),
-                "cost_center": self.cost_center_var.get().strip(),
-                "employment_type": self.employment_type_var.get(),
-                "status": self.status_var.get()
-            }
-            
-            # Include employee ID if selected
-            if self.employee_id:
-                self.result["employee_id"] = self.employee_id
-            
-            # If this is an existing change, include the ID
-            if self.change and self.change.id:
-                self.result["id"] = self.change.id
-            
-            self.destroy()
-        except ValueError as e:
-            messagebox.showerror("Error", str(e))
-    
-    def on_cancel(self):
-        """Cancel dialog"""
-        self.result = None
-        self.destroy()
 
 class SettingsTab(ttk.Frame):
     def __init__(self, parent):
@@ -2760,7 +2791,7 @@ class SettingsTab(ttk.Frame):
 class ForecastApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Forecast Tool")
+        self.title("TSC Headcount")
         self.geometry("1200x800")
         self.configure(background=COLORS['background'])
         
