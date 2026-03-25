@@ -30,27 +30,65 @@ COLORS = {
 # Configure ttk styles
 def configure_styles():
     style = ttk.Style()
-    
+    # Native Windows themes often ignore custom fg/bg maps (white-on-white hover). Clam honors them.
+    if "clam" in style.theme_names():
+        style.theme_use("clam")
+
     # Configure main window style
-    style.configure('Main.TFrame', background=COLORS['background'])
-    
-    # Basic notebook styling that should work across platforms
-    style.configure('TNotebook', background=COLORS['background'])
-    style.configure('TNotebook.Tab', padding=[10, 5], background=COLORS['background'], foreground=COLORS['text'])
-    style.map('TNotebook.Tab',
-        background=[('selected', COLORS['secondary'])],
-        foreground=[('selected', COLORS['white'])]
+    style.configure("Main.TFrame", background=COLORS["background"])
+
+    # Notebook: unselected = gray tab + dark text; selected = white panel + dark text (readable on all platforms)
+    style.configure("TNotebook", background=COLORS["background"], borderwidth=0)
+    style.configure(
+        "TNotebook.Tab",
+        padding=[12, 6],
+        background=COLORS["table_header"],
+        foreground=COLORS["text"],
     )
-    
-    # Configure button styles
-    style.configure('Primary.TButton',
+    style.map(
+        "TNotebook.Tab",
+        background=[("selected", COLORS["white"])],
+        foreground=[("selected", COLORS["text"])],
+    )
+
+    # Primary actions: keep label light on dark for every interactive state (hover/press/focus)
+    style.configure(
+        "Primary.TButton",
         padding=10,
-        background=COLORS['primary'],
-        foreground=COLORS['white']
+        background=COLORS["primary"],
+        foreground=COLORS["white"],
+        borderwidth=1,
+        focuscolor=COLORS["primary"],
     )
-    style.map('Primary.TButton',
-        background=[('active', COLORS['secondary'])],
-        foreground=[('active', COLORS['white'])]
+    style.map(
+        "Primary.TButton",
+        background=[
+            ("disabled", COLORS["border"]),
+            ("pressed", COLORS["secondary"]),
+            ("active", COLORS["secondary"]),
+            ("!disabled", COLORS["primary"]),
+        ],
+        foreground=[
+            ("disabled", COLORS["text"]),
+            ("pressed", COLORS["white"]),
+            ("active", COLORS["white"]),
+            ("!disabled", COLORS["white"]),
+        ],
+    )
+
+    # Default buttons: avoid light-on-light when the theme highlights
+    style.configure("TButton", background=COLORS["background"])
+    style.map(
+        "TButton",
+        background=[
+            ("pressed", COLORS["table_header"]),
+            ("active", COLORS["table_header"]),
+            ("!disabled", COLORS["background"]),
+        ],
+        foreground=[
+            ("disabled", COLORS["dark"]),
+            ("!disabled", COLORS["text"]),
+        ],
     )
     
     # Configure entry styles
@@ -139,6 +177,44 @@ def configure_styles():
     style.configure('TSeparator',
         background=COLORS['border']
     )
+
+
+def master_detail_scroll_setup(container, title_var, initial_title):
+    """Title + scrollable form column (same pattern as Planned Changes detail pane)."""
+    container.columnconfigure(0, weight=1)
+    container.rowconfigure(1, weight=1)
+    title_var.set(initial_title)
+    ttk.Label(
+        container,
+        textvariable=title_var,
+        font=("Helvetica", 11, "bold"),
+    ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
+    canvas = tk.Canvas(container, highlightthickness=0)
+    vsb = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
+    canvas.configure(yscrollcommand=vsb.set)
+    form = ttk.Frame(canvas, padding=(0, 0, 6, 0))
+    inner_win = canvas.create_window((0, 0), window=form, anchor=tk.NW)
+
+    def sync_scroll(_event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def on_canvas_cfg(event):
+        canvas.itemconfigure(inner_win, width=event.width)
+
+    form.bind("<Configure>", sync_scroll)
+    canvas.bind("<Configure>", on_canvas_cfg)
+    canvas.grid(row=1, column=0, sticky=tk.NSEW)
+    vsb.grid(row=1, column=1, sticky=tk.NS)
+
+    def on_mw(event):
+        if canvas.winfo_containing(event.x_root, event.y_root):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+
+    canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", on_mw))
+    canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
+    return canvas, form
+
 
 # Create database engine
 engine = create_engine('sqlite:///forecast_tool.db')
@@ -270,176 +346,44 @@ class Forecast(Base):
 # Create tables
 Base.metadata.create_all(engine)
 
-class EmployeeDialog(tk.Toplevel):
-    def __init__(self, parent, employee=None):
-        super().__init__(parent)
-        self.parent = parent
-        self.employee = employee
-        self.result = None
-        
-        self.title("Employee")
-        self.geometry("450x400")
-        self.resizable(True, True)
-        
-        # Make dialog modal
-        self.transient(parent)
-        self.grab_set()
-        
-        # Create form
-        frame = ttk.Frame(self, padding="10")
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Name
-        ttk.Label(frame, text="Name:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.name_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=self.name_var, width=40).grid(row=0, column=1, sticky=tk.W, pady=5)
-        
-        # Manager Code
-        ttk.Label(frame, text="Manager Code:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.manager_code_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=self.manager_code_var, width=20).grid(row=1, column=1, sticky=tk.W, pady=5)
-        
-        # Cost Center
-        ttk.Label(frame, text="Cost Center:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.cost_center_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=self.cost_center_var, width=20).grid(row=2, column=1, sticky=tk.W, pady=5)
-        
-        # Work Code
-        ttk.Label(frame, text="Work Code:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.work_code_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=self.work_code_var, width=20).grid(row=3, column=1, sticky=tk.W, pady=5)
-        
-        # Employment Type
-        ttk.Label(frame, text="Employment Type:").grid(row=4, column=0, sticky=tk.W, pady=5)
-        self.employment_type_var = tk.StringVar()
-        employment_types = [et.value for et in EmploymentType]
-        ttk.Combobox(frame, textvariable=self.employment_type_var, values=employment_types, width=20, state="readonly").grid(row=4, column=1, sticky=tk.W, pady=5)
-        
-        # Start Date
-        ttk.Label(frame, text="Start Date (mm/dd/yy):").grid(row=5, column=0, sticky=tk.W, pady=5)
-        self.start_date_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=self.start_date_var, width=20).grid(row=5, column=1, sticky=tk.W, pady=5)
-        
-        # End Date
-        ttk.Label(frame, text="End Date (mm/dd/yy):").grid(row=6, column=0, sticky=tk.W, pady=5)
-        self.end_date_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=self.end_date_var, width=20).grid(row=6, column=1, sticky=tk.W, pady=5)
-        
-        # Buttons
-        button_frame = ttk.Frame(frame)
-        button_frame.grid(row=7, column=0, columnspan=2, pady=10)
-        
-        ttk.Button(button_frame, text="OK", command=self.on_ok, width=10).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Cancel", command=self.on_cancel, width=10).pack(side=tk.LEFT, padx=5)
-        
-        # If editing, populate fields
-        if employee:
-            self.name_var.set(employee.name)
-            self.manager_code_var.set(employee.manager_code)
-            self.cost_center_var.set(employee.cost_center)
-            self.work_code_var.set(employee.work_code if employee.work_code else "")
-            self.employment_type_var.set(employee.employment_type)
-            self.start_date_var.set(employee.start_date.strftime("%m/%d/%y") if employee.start_date else "")
-            self.end_date_var.set(employee.end_date.strftime("%m/%d/%y") if employee.end_date else "")
-        else:
-            self.start_date_var.set(datetime.now().strftime("%m/%d/%y"))
-        
-        # Center the dialog on the parent window
-        self.center_on_parent()
-    
-    def center_on_parent(self):
-        """Center the dialog on its parent window"""
-        self.update_idletasks()
-        parent_x = self.parent.winfo_rootx()
-        parent_y = self.parent.winfo_rooty()
-        parent_width = self.parent.winfo_width()
-        parent_height = self.parent.winfo_height()
-        
-        width = self.winfo_width()
-        height = self.winfo_height()
-        
-        x = parent_x + (parent_width - width) // 2
-        y = parent_y + (parent_height - height) // 2
-        
-        self.geometry(f"+{x}+{y}")
-    
-    def on_ok(self):
-        try:
-            # Validate required fields
-            if not self.name_var.get().strip():
-                raise ValueError("Name is required")
-            if not self.manager_code_var.get().strip():
-                raise ValueError("Manager Code is required")
-            if not self.cost_center_var.get().strip():
-                raise ValueError("Cost Center is required")
-            if not self.employment_type_var.get():
-                raise ValueError("Employment Type is required")
-            if not self.start_date_var.get().strip():
-                raise ValueError("Start Date is required")
-            
-            # Parse dates
-            start_date = datetime.strptime(self.start_date_var.get(), "%m/%d/%y").date()
-            end_date = None
-            if self.end_date_var.get().strip():
-                end_date = datetime.strptime(self.end_date_var.get(), "%m/%d/%y").date()
-                if end_date <= start_date:
-                    raise ValueError("End Date must be after Start Date")
-            
-            self.result = {
-                "name": self.name_var.get().strip(),
-                "manager_code": self.manager_code_var.get().strip(),
-                "cost_center": self.cost_center_var.get().strip(),
-                "work_code": self.work_code_var.get().strip(),
-                "employment_type": self.employment_type_var.get(),
-                "start_date": start_date,
-                "end_date": end_date
-            }
-            self.destroy()
-        except ValueError as e:
-            messagebox.showerror("Error", str(e))
-    
-    def on_cancel(self):
-        self.result = None
-        self.destroy()
-
 class EmployeeTab(ttk.Frame):
     def __init__(self, parent):
-        super().__init__(parent, padding="10")
-        self.parent = parent
+        super().__init__(parent)
+        self._record_id = None
+        self._detail_canvas = None
+        self._suppress_tree_select = False
         self.create_widgets()
-        
+
     def create_widgets(self):
-        # Create toolbar
-        toolbar = ttk.Frame(self, style="Panel.TFrame")
-        toolbar.pack(fill=tk.X, pady=(0, 10), padx=5)
-        
-        # Add decorative toolbar accent
-        accent_canvas = tk.Canvas(toolbar, width=3, height=30, highlightthickness=0)
-        accent_canvas.pack(side=tk.LEFT, padx=(0, 10), fill=tk.Y)
-        # Draw a gradient accent
-        for i in range(30):
-            # Gradient from primary to secondary 
-            r = int(74 + (52-74) * i/30)
-            g = int(125 + (195-125) * i/30)
-            b = int(186 + (143-186) * i/30)
-            color = f'#{r:02x}{g:02x}{b:02x}'
-            accent_canvas.create_line(0, i, 3, i, fill=color)
-        
-        # Button container for better visual grouping
-        button_container = ttk.Frame(toolbar, style="Panel.TFrame")
-        button_container.pack(side=tk.LEFT, fill=tk.Y)
-        
-        ttk.Button(button_container, text="Add Employee", command=self.add_employee).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_container, text="Edit Employee", command=self.edit_employee).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_container, text="Delete Employee", command=self.delete_employee).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_container, text="Import Employees", command=self.import_employees).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_container, text="Refresh", command=self.load_employees).pack(side=tk.LEFT, padx=5)
-        
-        # Create treeview
-        self.tree = ttk.Treeview(self, columns=("ID", "Name", "Manager Code", "Cost Center", "Type", "Start Date", "End Date"), show="headings")
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill=tk.X, padx=5, pady=5)
+
+        ttk.Button(toolbar, text="Add Employee", command=self.add_employee).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="Edit Employee", command=self.edit_employee).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="Delete Employee", command=self.delete_employee).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="Import Employees", command=self.import_employees).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="Refresh", command=self.load_employees).pack(side=tk.LEFT, padx=2)
+
+        self.paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        self.paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        left_frame = ttk.Frame(self.paned)
+        self.paned.add(left_frame, weight=2)
+
+        self.tree_frame = ttk.Frame(left_frame)
+        self.tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree_yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.tree = ttk.Treeview(
+            self.tree_frame,
+            columns=("ID", "Name", "Manager Code", "Cost Center", "Type", "Start Date", "End Date"),
+            show="headings",
+            yscrollcommand=scrollbar.set,
+        )
         self.tree.pack(fill=tk.BOTH, expand=True)
-        
-        # Configure treeview columns
+
         self.tree.heading("ID", text="ID")
         self.tree.heading("Name", text="Name")
         self.tree.heading("Manager Code", text="Manager Code")
@@ -447,181 +391,305 @@ class EmployeeTab(ttk.Frame):
         self.tree.heading("Type", text="Type")
         self.tree.heading("Start Date", text="Start Date")
         self.tree.heading("End Date", text="End Date")
-        
-        # Configure column widths
+
         self.tree.column("ID", width=50)
-        self.tree.column("Name", width=200)
-        self.tree.column("Manager Code", width=100)
-        self.tree.column("Cost Center", width=100)
-        self.tree.column("Type", width=100)
-        self.tree.column("Start Date", width=100)
-        self.tree.column("End Date", width=100)
-        
-        # Load initial data
+        self.tree.column("Name", width=180)
+        self.tree.column("Manager Code", width=90)
+        self.tree.column("Cost Center", width=90)
+        self.tree.column("Type", width=90)
+        self.tree.column("Start Date", width=90)
+        self.tree.column("End Date", width=90)
+
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+
+        right_outer = ttk.Frame(self.paned, padding=(8, 0, 0, 0))
+        self.paned.add(right_outer, weight=1)
+
+        self.detail_title_var = tk.StringVar(value="Employee")
+        self._detail_canvas, form = master_detail_scroll_setup(right_outer, self.detail_title_var, "Employee")
+
+        form.columnconfigure(1, weight=1)
+        details = ttk.LabelFrame(form, text="Employee details", padding=8)
+        details.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=4)
+        details.columnconfigure(1, weight=1)
+
+        ttk.Label(details, text="Name:").grid(row=0, column=0, sticky=tk.W, pady=4)
+        self.name_var = tk.StringVar()
+        ttk.Entry(details, textvariable=self.name_var, width=36).grid(row=0, column=1, sticky=tk.EW, pady=4)
+
+        ttk.Label(details, text="Manager Code:").grid(row=1, column=0, sticky=tk.W, pady=4)
+        self.manager_code_var = tk.StringVar()
+        ttk.Entry(details, textvariable=self.manager_code_var, width=22).grid(row=1, column=1, sticky=tk.W, pady=4)
+
+        ttk.Label(details, text="Cost Center:").grid(row=2, column=0, sticky=tk.W, pady=4)
+        self.cost_center_var = tk.StringVar()
+        ttk.Entry(details, textvariable=self.cost_center_var, width=22).grid(row=2, column=1, sticky=tk.W, pady=4)
+
+        ttk.Label(details, text="Work Code:").grid(row=3, column=0, sticky=tk.W, pady=4)
+        self.work_code_var = tk.StringVar()
+        ttk.Entry(details, textvariable=self.work_code_var, width=22).grid(row=3, column=1, sticky=tk.W, pady=4)
+
+        ttk.Label(details, text="Employment Type:").grid(row=4, column=0, sticky=tk.W, pady=4)
+        self.employment_type_var = tk.StringVar()
+        employment_types = [et.value for et in EmploymentType]
+        ttk.Combobox(
+            details, textvariable=self.employment_type_var, values=employment_types, width=20, state="readonly"
+        ).grid(row=4, column=1, sticky=tk.W, pady=4)
+
+        ttk.Label(details, text="Start Date (mm/dd/yy):").grid(row=5, column=0, sticky=tk.W, pady=4)
+        self.start_date_var = tk.StringVar()
+        ttk.Entry(details, textvariable=self.start_date_var, width=22).grid(row=5, column=1, sticky=tk.W, pady=4)
+
+        ttk.Label(details, text="End Date (mm/dd/yy):").grid(row=6, column=0, sticky=tk.W, pady=4)
+        self.end_date_var = tk.StringVar()
+        ttk.Entry(details, textvariable=self.end_date_var, width=22).grid(row=6, column=1, sticky=tk.W, pady=4)
+
+        button_bar = ttk.Frame(right_outer)
+        button_bar.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
+        ttk.Button(button_bar, text="Save", command=self._save_detail, width=10).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(button_bar, text="Cancel", command=self._cancel_detail, width=10).pack(side=tk.RIGHT, padx=4)
+
+        self.bind("<Destroy>", self._emp_on_destroy)
+        self.after_idle(self._emp_set_initial_sash)
         self.load_employees()
-    
+        self._clear_detail_form(new_mode=True)
+
+    def tree_yview(self, *args):
+        self.tree.yview(*args)
+
+    def _emp_set_initial_sash(self):
+        try:
+            self.paned.sashpos(0, 560)
+        except tk.TclError:
+            pass
+
+    def _emp_on_destroy(self, event):
+        if event.widget is not self:
+            return
+        try:
+            if self._detail_canvas is not None:
+                self._detail_canvas.unbind_all("<MouseWheel>")
+        except tk.TclError:
+            pass
+
+    def _clear_detail_form(self, new_mode=False):
+        self._record_id = None
+        self.detail_title_var.set("New employee" if new_mode else "Employee")
+        self.name_var.set("")
+        self.manager_code_var.set("")
+        self.cost_center_var.set("")
+        self.work_code_var.set("")
+        self.employment_type_var.set("")
+        self.start_date_var.set(datetime.now().strftime("%m/%d/%y"))
+        self.end_date_var.set("")
+
+    def _apply_employee_to_form(self, emp):
+        self._record_id = emp.id
+        self.detail_title_var.set(f"Employee #{emp.id}")
+        self.name_var.set(emp.name or "")
+        self.manager_code_var.set(emp.manager_code or "")
+        self.cost_center_var.set(emp.cost_center or "")
+        self.work_code_var.set(emp.work_code or "")
+        self.employment_type_var.set(emp.employment_type or "")
+        self.start_date_var.set(emp.start_date.strftime("%m/%d/%y") if emp.start_date else "")
+        self.end_date_var.set(emp.end_date.strftime("%m/%d/%y") if emp.end_date else "")
+
+    def _load_employee_by_id(self, emp_id):
+        session = get_session()
+        try:
+            employee = session.query(Employee).filter(Employee.id == emp_id).first()
+            if employee:
+                self._apply_employee_to_form(employee)
+            else:
+                messagebox.showerror("Error", "Employee not found.")
+                self._clear_detail_form(new_mode=True)
+        finally:
+            session.close()
+
+    def _on_tree_select(self, _event=None):
+        if self._suppress_tree_select:
+            return
+        selected = self.tree.selection()
+        if not selected:
+            return
+        emp_id = self.tree.item(selected[0])["values"][0]
+        self._load_employee_by_id(emp_id)
+
+    def _collect_detail_payload(self):
+        if not self.name_var.get().strip():
+            raise ValueError("Name is required")
+        if not self.manager_code_var.get().strip():
+            raise ValueError("Manager Code is required")
+        if not self.cost_center_var.get().strip():
+            raise ValueError("Cost Center is required")
+        if not self.employment_type_var.get():
+            raise ValueError("Employment Type is required")
+        if not self.start_date_var.get().strip():
+            raise ValueError("Start Date is required")
+        start_date = datetime.strptime(self.start_date_var.get(), "%m/%d/%y").date()
+        end_date = None
+        if self.end_date_var.get().strip():
+            end_date = datetime.strptime(self.end_date_var.get(), "%m/%d/%y").date()
+            if end_date <= start_date:
+                raise ValueError("End Date must be after Start Date")
+        return {
+            "name": self.name_var.get().strip(),
+            "manager_code": self.manager_code_var.get().strip(),
+            "cost_center": self.cost_center_var.get().strip(),
+            "work_code": self.work_code_var.get().strip(),
+            "employment_type": self.employment_type_var.get(),
+            "start_date": start_date,
+            "end_date": end_date,
+        }
+
+    def _save_detail(self):
+        try:
+            data = self._collect_detail_payload()
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+            return
+
+        try:
+            session = get_session()
+            if self._record_id is None:
+                employee = Employee(
+                    name=data["name"],
+                    manager_code=data["manager_code"],
+                    cost_center=data["cost_center"],
+                    work_code=data["work_code"],
+                    employment_type=data["employment_type"],
+                    start_date=data["start_date"],
+                    end_date=data["end_date"],
+                )
+                session.add(employee)
+                session.commit()
+                new_id = employee.id
+                session.close()
+                self.load_employees()
+                self._select_tree_row_by_id(new_id)
+                messagebox.showinfo("Success", "Employee added successfully.")
+            else:
+                employee = session.query(Employee).filter(Employee.id == self._record_id).first()
+                if not employee:
+                    session.close()
+                    messagebox.showerror("Error", "Employee not found.")
+                    return
+                employee.name = data["name"]
+                employee.manager_code = data["manager_code"]
+                employee.cost_center = data["cost_center"]
+                employee.work_code = data["work_code"]
+                employee.employment_type = data["employment_type"]
+                employee.start_date = data["start_date"]
+                employee.end_date = data["end_date"]
+                session.commit()
+                rid = self._record_id
+                session.close()
+                self.load_employees()
+                self._select_tree_row_by_id(rid)
+                messagebox.showinfo("Success", "Employee updated successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save employee: {str(e)}")
+
+    def _select_tree_row_by_id(self, emp_id):
+        self._suppress_tree_select = True
+        try:
+            for item in self.tree.get_children():
+                if self.tree.item(item)["values"][0] == emp_id:
+                    self.tree.selection_set(item)
+                    self.tree.see(item)
+                    self._load_employee_by_id(emp_id)
+                    return
+        finally:
+            self._suppress_tree_select = False
+
+    def _cancel_detail(self):
+        if self._record_id is not None:
+            self._load_employee_by_id(self._record_id)
+        else:
+            sel = self.tree.selection()
+            if sel:
+                self._on_tree_select()
+            else:
+                self._clear_detail_form(new_mode=True)
+
     def load_employees(self):
         """Load employees from database"""
-        # Clear existing items
+        keep_id = self._record_id
         for item in self.tree.get_children():
             self.tree.delete(item)
-        
+
         try:
             session = get_session()
             employees = session.query(Employee).all()
-            
-            # For alternating row colors
             count = 0
-            
             for emp in employees:
-                item_id = self.tree.insert("", tk.END, values=(
-                    emp.id,
-                    emp.name,
-                    emp.manager_code,
-                    emp.cost_center,
-                    emp.employment_type,
-                    emp.start_date.strftime("%m/%d/%y") if emp.start_date else "",
-                    emp.end_date.strftime("%m/%d/%y") if emp.end_date else ""
-                ))
-                
-                # Apply alternating row colors
-                if count % 2 == 1:
-                    self.tree.item(item_id, tags=('evenrow',))
-                else:
-                    self.tree.item(item_id, tags=('oddrow',))
+                item_id = self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        emp.id,
+                        emp.name,
+                        emp.manager_code,
+                        emp.cost_center,
+                        emp.employment_type,
+                        emp.start_date.strftime("%m/%d/%y") if emp.start_date else "",
+                        emp.end_date.strftime("%m/%d/%y") if emp.end_date else "",
+                    ),
+                )
+                self.tree.item(item_id, tags=("evenrow",) if count % 2 == 1 else ("oddrow",))
                 count += 1
-            
-            # Configure row tags
-            self.tree.tag_configure('oddrow', background=COLORS['white'])
-            self.tree.tag_configure('evenrow', background=COLORS['table_row_alt'])
-            
+            self.tree.tag_configure("oddrow", background=COLORS["white"])
+            self.tree.tag_configure("evenrow", background=COLORS["table_row_alt"])
             session.close()
+            if keep_id is not None:
+                if any(self.tree.item(i)["values"][0] == keep_id for i in self.tree.get_children()):
+                    self._select_tree_row_by_id(keep_id)
+                else:
+                    self._clear_detail_form(new_mode=True)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load employees: {str(e)}")
-    
+
     def add_employee(self):
-        """Open dialog to add a new employee"""
-        dialog = EmployeeDialog(self)
-        dialog.wait_window()
-        
-        if dialog.result:
-            try:
-                session = get_session()
+        self._suppress_tree_select = True
+        try:
+            self.tree.selection_remove(self.tree.selection())
+        except tk.TclError:
+            pass
+        self._suppress_tree_select = False
+        self._clear_detail_form(new_mode=True)
 
-                # Create new employee
-                employee = Employee(
-                    name=dialog.result["name"],
-                    manager_code=dialog.result["manager_code"],
-                    cost_center=dialog.result["cost_center"],
-                    work_code=dialog.result["work_code"],
-                    employment_type=dialog.result["employment_type"],
-                    start_date=dialog.result["start_date"],
-                    end_date=dialog.result["end_date"]
-                )
-
-                session.add(employee)
-                session.commit()
-                session.close()
-
-                # Reload data
-                self.load_employees()
-                
-                # Show success message
-                messagebox.showinfo("Success", "Employee added successfully.")
-                
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to add employee: {str(e)}")
-    
     def edit_employee(self):
-        """Open dialog to edit selected employee"""
-        selection = self.tree.selection()
-        if not selection:
+        selected = self.tree.selection()
+        if not selected:
             messagebox.showwarning("No Selection", "Please select an employee to edit.")
             return
-        
-        # Get employee ID from selection
-        emp_id = self.tree.item(selection[0])["values"][0]
-        
-        try:
-            session = get_session()
-            
-            # Get the employee
-            employee = session.query(Employee).filter(Employee.id == emp_id).first()
-            if employee:
-                # Open dialog with current values
-                dialog = EmployeeDialog(self, employee)
-                session.close()
-                
-                dialog.wait_window()
-                
-                if dialog.result:
-                    try:
-                        session = get_session()
-                        
-                        # Update employee
-                        employee = session.query(Employee).filter(Employee.id == emp_id).first()
-                        employee.name = dialog.result["name"]
-                        employee.manager_code = dialog.result["manager_code"]
-                        employee.cost_center = dialog.result["cost_center"]
-                        employee.work_code = dialog.result["work_code"]
-                        employee.employment_type = dialog.result["employment_type"]
-                        employee.start_date = dialog.result["start_date"]
-                        employee.end_date = dialog.result["end_date"]
-                        
-                        session.commit()
-                        session.close()
-                        
-                        # Reload data
-                        self.load_employees()
-                        
-                        # Show success message
-                        messagebox.showinfo("Success", "Employee updated successfully.")
-                        
-                    except Exception as e:
-                        messagebox.showerror("Error", f"Failed to update employee: {str(e)}")
-            else:
-                messagebox.showerror("Error", "Employee not found.")
-                session.close()
-                
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load employee: {str(e)}")
-    
+        emp_id = self.tree.item(selected[0])["values"][0]
+        self._load_employee_by_id(emp_id)
+
     def delete_employee(self):
-        """Delete selected employee"""
         selection = self.tree.selection()
         if not selection:
             messagebox.showwarning("No Selection", "Please select an employee to delete.")
             return
-        
-        # Get employee ID from selection
         emp_id = self.tree.item(selection[0])["values"][0]
-        
-        # Confirm deletion
         if not messagebox.askyesno("Confirm Deletion", f"Are you sure you want to delete employee with ID {emp_id}?"):
             return
-        
-        # Delete employee
         try:
             session = get_session()
-            
-            # Get the employee
             employee = session.query(Employee).filter(Employee.id == emp_id).first()
             if employee:
                 session.delete(employee)
                 session.commit()
-                
-                # Reload data
+                if self._record_id == emp_id:
+                    self._clear_detail_form(new_mode=True)
                 self.load_employees()
-                
-                # Show success message
                 messagebox.showinfo("Success", f"Employee with ID {emp_id} deleted successfully.")
             else:
                 messagebox.showerror("Error", "Employee not found.")
-            
             session.close()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to delete employee: {str(e)}")
-            
+
     def import_employees(self):
         """Import employees from a CSV file"""
         # Ask user to select a CSV file
@@ -709,456 +777,497 @@ class EmployeeTab(ttk.Frame):
             messagebox.showerror("Import Error", f"Failed to import employees: {str(e)}")
 
 class ProjectAllocationTab(ttk.Frame):
+    _MONTH_KEYS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
     def __init__(self, parent):
         super().__init__(parent)
-        
-        # Create toolbar
+        self._alloc_db_id = None
+        self._detail_canvas = None
+        self._suppress_tree_select = False
+        self._alloc_spinboxes = {}
+
         toolbar = ttk.Frame(self)
         toolbar.pack(fill=tk.X, padx=5, pady=5)
-        
+
         ttk.Button(toolbar, text="Add Allocation", command=self.add_allocation).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="Edit Allocation", command=self.edit_allocation).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="Delete Allocation", command=self.delete_allocation).pack(side=tk.LEFT, padx=2)
-        
-        # Create treeview with scrollbar
-        self.tree_frame = ttk.Frame(self)
-        self.tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        self.tree = ttk.Treeview(self.tree_frame, columns=(
-            "manager_code", "year", "cost_center", "work_code",
-            "jan", "feb", "mar", "apr", "may", "jun",
-            "jul", "aug", "sep", "oct", "nov", "dec"
-        ), show="headings")
-        
-        # Add scrollbar
-        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+        ttk.Button(toolbar, text="Refresh", command=self.load_allocations).pack(side=tk.LEFT, padx=2)
+
+        self.paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        self.paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        left_frame = ttk.Frame(self.paned)
+        self.paned.add(left_frame, weight=2)
+
+        self.tree_frame = ttk.Frame(left_frame)
+        self.tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree_yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        
-        # Configure columns
+
+        self.tree = ttk.Treeview(
+            self.tree_frame,
+            columns=(
+                "manager_code",
+                "year",
+                "cost_center",
+                "work_code",
+                "jan",
+                "feb",
+                "mar",
+                "apr",
+                "may",
+                "jun",
+                "jul",
+                "aug",
+                "sep",
+                "oct",
+                "nov",
+                "dec",
+            ),
+            show="headings",
+            yscrollcommand=scrollbar.set,
+        )
+
         self.tree.heading("manager_code", text="Manager")
         self.tree.heading("year", text="Year")
         self.tree.heading("cost_center", text="Cost Center")
         self.tree.heading("work_code", text="Work Code")
-        self.tree.heading("jan", text="Jan")
-        self.tree.heading("feb", text="Feb")
-        self.tree.heading("mar", text="Mar")
-        self.tree.heading("apr", text="Apr")
-        self.tree.heading("may", text="May")
-        self.tree.heading("jun", text="Jun")
-        self.tree.heading("jul", text="Jul")
-        self.tree.heading("aug", text="Aug")
-        self.tree.heading("sep", text="Sep")
-        self.tree.heading("oct", text="Oct")
-        self.tree.heading("nov", text="Nov")
-        self.tree.heading("dec", text="Dec")
-        
-        # Set column widths
-        self.tree.column("manager_code", width=100)
-        self.tree.column("year", width=60)
-        self.tree.column("cost_center", width=100)
-        self.tree.column("work_code", width=100)
-        for month in ["jan", "feb", "mar", "apr", "may", "jun",
-                     "jul", "aug", "sep", "oct", "nov", "dec"]:
-            self.tree.column(month, width=50)
-        
+        for m in self._MONTH_KEYS:
+            self.tree.heading(m, text=m[:3].title())
+
+        self.tree.column("manager_code", width=90)
+        self.tree.column("year", width=50)
+        self.tree.column("cost_center", width=80)
+        self.tree.column("work_code", width=80)
+        for m in self._MONTH_KEYS:
+            self.tree.column(m, width=44)
+
         self.tree.pack(fill=tk.BOTH, expand=True)
-        
-        # Load allocations
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+
+        right_outer = ttk.Frame(self.paned, padding=(8, 0, 0, 0))
+        self.paned.add(right_outer, weight=1)
+
+        self.detail_title_var = tk.StringVar(value="Allocation")
+        self._detail_canvas, form = master_detail_scroll_setup(right_outer, self.detail_title_var, "Allocation")
+
+        form.columnconfigure(1, weight=1)
+        info_frame = ttk.LabelFrame(form, text="Allocation info", padding=8)
+        info_frame.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=(0, 8))
+        info_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(info_frame, text="Manager Code:").grid(row=0, column=0, sticky=tk.W, pady=4)
+        self.manager_var = tk.StringVar()
+        self.manager_combo = ttk.Combobox(info_frame, textvariable=self.manager_var, width=18, state="readonly")
+        self.manager_combo.grid(row=0, column=1, sticky=tk.W, pady=4)
+
+        ttk.Label(info_frame, text="Year:").grid(row=1, column=0, sticky=tk.W, pady=4)
+        self.year_var = tk.StringVar(value=str(datetime.now().year))
+        years = [str(y) for y in range(datetime.now().year - 2, datetime.now().year + 3)]
+        ttk.Combobox(info_frame, textvariable=self.year_var, values=years, width=8, state="readonly").grid(
+            row=1, column=1, sticky=tk.W, pady=4
+        )
+
+        project_frame = ttk.LabelFrame(form, text="Project details", padding=8)
+        project_frame.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 8))
+        project_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(project_frame, text="Cost Center:").grid(row=0, column=0, sticky=tk.W, pady=4)
+        self.cost_center_var = tk.StringVar()
+        ttk.Entry(project_frame, textvariable=self.cost_center_var, width=22).grid(row=0, column=1, sticky=tk.EW, pady=4)
+
+        ttk.Label(project_frame, text="Work Code:").grid(row=1, column=0, sticky=tk.W, pady=4)
+        self.work_code_var = tk.StringVar()
+        ttk.Entry(project_frame, textvariable=self.work_code_var, width=22).grid(row=1, column=1, sticky=tk.EW, pady=4)
+
+        allocation_frame = ttk.LabelFrame(form, text="Monthly allocations", padding=8)
+        allocation_frame.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=(0, 4))
+
+        spinbox_frame = ttk.Frame(allocation_frame)
+        spinbox_frame.pack(fill=tk.X, pady=4)
+
+        month_labels = [
+            ("January", "jan"),
+            ("February", "feb"),
+            ("March", "mar"),
+            ("April", "apr"),
+            ("May", "may"),
+            ("June", "jun"),
+            ("July", "jul"),
+            ("August", "aug"),
+            ("September", "sep"),
+            ("October", "oct"),
+            ("November", "nov"),
+            ("December", "dec"),
+        ]
+        for i, (month_name, month_code) in enumerate(month_labels):
+            row, col = i // 3, i % 3
+            mf = ttk.Frame(spinbox_frame)
+            mf.grid(row=row, column=col, padx=4, pady=4, sticky=tk.W)
+            ttk.Label(mf, text=f"{month_name}:").pack(side=tk.LEFT)
+            sb = ttk.Spinbox(mf, from_=0, to=100, increment=0.5, width=8)
+            sb.pack(side=tk.LEFT, padx=4)
+            self._alloc_spinboxes[month_code] = sb
+
+        paste_frame = ttk.Frame(allocation_frame)
+        paste_frame.pack(fill=tk.X, pady=6)
+        ttk.Button(paste_frame, text="Paste Monthly Values", command=self._paste_monthly_values).pack(side=tk.LEFT, padx=2)
+
+        button_bar = ttk.Frame(right_outer)
+        button_bar.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
+        ttk.Button(button_bar, text="Save", command=self._save_detail, width=10).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(button_bar, text="Cancel", command=self._cancel_detail, width=10).pack(side=tk.RIGHT, padx=4)
+
+        self.bind("<Destroy>", self._pa_on_destroy)
+        self.after_idle(self._pa_set_initial_sash)
+        self._refresh_manager_list()
         self.load_allocations()
-    
-    def load_allocations(self):
-        """Load project allocations from database"""
+        self._clear_detail_form(new_mode=True)
+
+    def tree_yview(self, *args):
+        self.tree.yview(*args)
+
+    def _pa_set_initial_sash(self):
         try:
-            # Clear existing items
-            for item in self.tree.get_children():
-                self.tree.delete(item)
-            
-            session = get_session()
-            allocations = session.query(ProjectAllocation).all()
-            
-            # For alternating row colors
-            count = 0
-            
-            for allocation in allocations:
-                item_id = self.tree.insert("", tk.END, values=(
-                    allocation.manager_code,
-                    allocation.year,
-                    allocation.cost_center,
-                    allocation.work_code,
-                    allocation.jan,
-                    allocation.feb,
-                    allocation.mar,
-                    allocation.apr,
-                    allocation.may,
-                    allocation.jun,
-                    allocation.jul,
-                    allocation.aug,
-                    allocation.sep,
-                    allocation.oct,
-                    allocation.nov,
-                    allocation.dec
-                ))
-                
-                # Apply alternating row colors
-                if count % 2 == 1:
-                    self.tree.item(item_id, tags=('evenrow',))
-                else:
-                    self.tree.item(item_id, tags=('oddrow',))
-                count += 1
-            
-            # Configure row tags
-            self.tree.tag_configure('oddrow', background=COLORS['white'])
-            self.tree.tag_configure('evenrow', background=COLORS['table_row_alt'])
-            
+            self.paned.sashpos(0, 560)
+        except tk.TclError:
+            pass
+
+    def _pa_on_destroy(self, event):
+        if event.widget is not self:
+            return
+        try:
+            if self._detail_canvas is not None:
+                self._detail_canvas.unbind_all("<MouseWheel>")
+        except tk.TclError:
+            pass
+
+    def _refresh_manager_list(self):
+        session = get_session()
+        try:
+            managers = session.query(Employee.manager_code).distinct().all()
+            self.manager_combo["values"] = [m[0] for m in managers if m[0]]
+        finally:
             session.close()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load allocations: {str(e)}")
-    
-    def add_allocation(self):
-        """Add a new project allocation"""
+
+    def _clear_detail_form(self, new_mode=False):
+        self._alloc_db_id = None
+        self.detail_title_var.set("New allocation" if new_mode else "Allocation")
+        self.manager_var.set("")
+        self.year_var.set(str(datetime.now().year))
+        self.cost_center_var.set("")
+        self.work_code_var.set("")
+        for mk in self._MONTH_KEYS:
+            self._alloc_spinboxes[mk].set(0)
+
+    def _apply_allocation_to_form(self, allocation):
+        self._alloc_db_id = allocation.id
+        self.detail_title_var.set(f"Allocation #{allocation.id}")
+        self.manager_var.set(allocation.manager_code or "")
+        self.year_var.set(str(allocation.year))
+        self.cost_center_var.set(allocation.cost_center or "")
+        self.work_code_var.set(allocation.work_code or "")
+        self._alloc_spinboxes["jan"].set(allocation.jan or 0)
+        self._alloc_spinboxes["feb"].set(allocation.feb or 0)
+        self._alloc_spinboxes["mar"].set(allocation.mar or 0)
+        self._alloc_spinboxes["apr"].set(allocation.apr or 0)
+        self._alloc_spinboxes["may"].set(allocation.may or 0)
+        self._alloc_spinboxes["jun"].set(allocation.jun or 0)
+        self._alloc_spinboxes["jul"].set(allocation.jul or 0)
+        self._alloc_spinboxes["aug"].set(allocation.aug or 0)
+        self._alloc_spinboxes["sep"].set(allocation.sep or 0)
+        self._alloc_spinboxes["oct"].set(allocation.oct or 0)
+        self._alloc_spinboxes["nov"].set(allocation.nov or 0)
+        self._alloc_spinboxes["dec"].set(allocation.dec or 0)
+
+    def _load_allocation_by_key(self, manager_code, year, cost_center, work_code):
+        session = get_session()
         try:
-            dialog = ProjectAllocationDialog(self, None, datetime.now().year)
-            self.wait_window(dialog)
-            
-            if dialog.result:
-                session = get_session()
-                
-                # Create new allocation
-                allocation = ProjectAllocation(
-                    manager_code=dialog.result["manager_code"],
-                    year=dialog.result["year"],
-                    cost_center=dialog.result["cost_center"],
-                    work_code=dialog.result["work_code"],
-                    jan=dialog.result["jan"],
-                    feb=dialog.result["feb"],
-                    mar=dialog.result["mar"],
-                    apr=dialog.result["apr"],
-                    may=dialog.result["may"],
-                    jun=dialog.result["jun"],
-                    jul=dialog.result["jul"],
-                    aug=dialog.result["aug"],
-                    sep=dialog.result["sep"],
-                    oct=dialog.result["oct"],
-                    nov=dialog.result["nov"],
-                    dec=dialog.result["dec"]
+            allocation = (
+                session.query(ProjectAllocation)
+                .filter(
+                    ProjectAllocation.manager_code == manager_code,
+                    ProjectAllocation.year == year,
+                    ProjectAllocation.cost_center == cost_center,
+                    ProjectAllocation.work_code == work_code,
                 )
-                
+                .first()
+            )
+            if allocation:
+                self._apply_allocation_to_form(allocation)
+            else:
+                messagebox.showerror("Error", "Allocation not found.")
+                self._clear_detail_form(new_mode=True)
+        finally:
+            session.close()
+
+    def _on_tree_select(self, _event=None):
+        if self._suppress_tree_select:
+            return
+        selected = self.tree.selection()
+        if not selected:
+            return
+        v = self.tree.item(selected[0])["values"]
+        self._load_allocation_by_key(v[0], v[1], v[2], v[3])
+
+    def _collect_detail_payload(self):
+        if not self.manager_var.get():
+            raise ValueError("Manager Code is required")
+        if not self.year_var.get():
+            raise ValueError("Year is required")
+        if not self.cost_center_var.get().strip():
+            raise ValueError("Cost Center is required")
+        if not self.work_code_var.get().strip():
+            raise ValueError("Work Code is required")
+        monthly = {}
+        for month, spinbox in self._alloc_spinboxes.items():
+            try:
+                monthly[month] = float(spinbox.get())
+            except ValueError:
+                raise ValueError(f"Invalid value for {month}")
+        return {
+            "manager_code": self.manager_var.get(),
+            "year": int(self.year_var.get()),
+            "cost_center": self.cost_center_var.get().strip(),
+            "work_code": self.work_code_var.get().strip(),
+            **monthly,
+        }
+
+    def _paste_monthly_values(self):
+        try:
+            clipboard = self.clipboard_get()
+            raw = clipboard.strip().split()
+            float_values = []
+            for val in raw:
+                val = val.replace(",", "").strip()
+                float_val = float(val)
+                if float_val < 0 or float_val > 100:
+                    raise ValueError(f"Value {float_val} is out of range (0-100)")
+                float_values.append(float_val)
+            if len(float_values) != 12:
+                messagebox.showerror(
+                    "Error",
+                    f"Expected 12 values, got {len(float_values)}.\nPlease copy exactly 12 monthly values.",
+                )
+                return
+            for month, value in zip(self._MONTH_KEYS, float_values):
+                self._alloc_spinboxes[month].set(f"{value:.1f}")
+            messagebox.showinfo("Success", "Values pasted successfully.")
+        except tk.TclError:
+            messagebox.showerror("Error", "No data in clipboard. Please copy values first.")
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+
+    def _save_detail(self):
+        try:
+            data = self._collect_detail_payload()
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+            return
+        try:
+            session = get_session()
+            if self._alloc_db_id is None:
+                allocation = ProjectAllocation(
+                    manager_code=data["manager_code"],
+                    year=data["year"],
+                    cost_center=data["cost_center"],
+                    work_code=data["work_code"],
+                    jan=data["jan"],
+                    feb=data["feb"],
+                    mar=data["mar"],
+                    apr=data["apr"],
+                    may=data["may"],
+                    jun=data["jun"],
+                    jul=data["jul"],
+                    aug=data["aug"],
+                    sep=data["sep"],
+                    oct=data["oct"],
+                    nov=data["nov"],
+                    dec=data["dec"],
+                )
                 session.add(allocation)
                 session.commit()
+                new_id = allocation.id
                 session.close()
-                
-                # Reload allocations
+                self._refresh_manager_list()
                 self.load_allocations()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to add allocation: {str(e)}")
-    
-    def edit_allocation(self):
-        """Edit selected project allocation"""
-        try:
-            selected = self.tree.selection()
-            if not selected:
-                messagebox.showwarning("Warning", "Please select an allocation to edit.")
-                return
-            
-            # Get selected allocation
-            values = self.tree.item(selected[0])["values"]
-            
-            session = get_session()
-            allocation = session.query(ProjectAllocation).filter(
-                ProjectAllocation.manager_code == values[0],
-                ProjectAllocation.year == values[1],
-                ProjectAllocation.cost_center == values[2],
-                ProjectAllocation.work_code == values[3]
-            ).first()
-            
-            if not allocation:
-                session.close()
-                messagebox.showerror("Error", "Selected allocation not found in database.")
-                return
-            
-            # Open dialog with current values
-            dialog = ProjectAllocationDialog(self, allocation.manager_code, allocation.year, allocation)
-            self.wait_window(dialog)
-            
-            if dialog.result:
-                # Update allocation
-                allocation.manager_code = dialog.result["manager_code"]
-                allocation.year = dialog.result["year"]
-                allocation.cost_center = dialog.result["cost_center"]
-                allocation.work_code = dialog.result["work_code"]
-                allocation.jan = dialog.result["jan"]
-                allocation.feb = dialog.result["feb"]
-                allocation.mar = dialog.result["mar"]
-                allocation.apr = dialog.result["apr"]
-                allocation.may = dialog.result["may"]
-                allocation.jun = dialog.result["jun"]
-                allocation.jul = dialog.result["jul"]
-                allocation.aug = dialog.result["aug"]
-                allocation.sep = dialog.result["sep"]
-                allocation.oct = dialog.result["oct"]
-                allocation.nov = dialog.result["nov"]
-                allocation.dec = dialog.result["dec"]
-                
+                self._select_tree_row_by_db_id(new_id)
+                messagebox.showinfo("Success", "Allocation added successfully.")
+            else:
+                allocation = session.query(ProjectAllocation).filter(ProjectAllocation.id == self._alloc_db_id).first()
+                if not allocation:
+                    session.close()
+                    messagebox.showerror("Error", "Allocation not found.")
+                    return
+                allocation.manager_code = data["manager_code"]
+                allocation.year = data["year"]
+                allocation.cost_center = data["cost_center"]
+                allocation.work_code = data["work_code"]
+                allocation.jan = data["jan"]
+                allocation.feb = data["feb"]
+                allocation.mar = data["mar"]
+                allocation.apr = data["apr"]
+                allocation.may = data["may"]
+                allocation.jun = data["jun"]
+                allocation.jul = data["jul"]
+                allocation.aug = data["aug"]
+                allocation.sep = data["sep"]
+                allocation.oct = data["oct"]
+                allocation.nov = data["nov"]
+                allocation.dec = data["dec"]
                 session.commit()
-            
-            session.close()
-            
-            # Reload allocations
-            self.load_allocations()
+                aid = self._alloc_db_id
+                session.close()
+                self._refresh_manager_list()
+                self.load_allocations()
+                self._select_tree_row_by_db_id(aid)
+                messagebox.showinfo("Success", "Allocation updated successfully.")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to edit allocation: {str(e)}")
-    
-    def delete_allocation(self):
-        """Delete selected project allocation"""
+            messagebox.showerror("Error", f"Failed to save allocation: {str(e)}")
+
+    def _select_tree_row_by_db_id(self, alloc_id):
+        self._suppress_tree_select = True
         try:
-            selected = self.tree.selection()
-            if not selected:
-                messagebox.showwarning("Warning", "Please select an allocation to delete.")
-                return
-            
-            if not messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this allocation?"):
-                return
-            
-            # Get selected allocation
-            values = self.tree.item(selected[0])["values"]
-            
             session = get_session()
-            allocation = session.query(ProjectAllocation).filter(
-                ProjectAllocation.manager_code == values[0],
-                ProjectAllocation.year == values[1],
-                ProjectAllocation.cost_center == values[2],
-                ProjectAllocation.work_code == values[3]
-            ).first()
-            
+            try:
+                allocation = session.query(ProjectAllocation).filter(ProjectAllocation.id == alloc_id).first()
+            finally:
+                session.close()
+            if not allocation:
+                return
+            key = (allocation.manager_code, allocation.year, allocation.cost_center, allocation.work_code)
+            for item in self.tree.get_children():
+                v = self.tree.item(item)["values"]
+                if (v[0], v[1], v[2], v[3]) == key:
+                    self.tree.selection_set(item)
+                    self.tree.see(item)
+                    self._load_allocation_by_key(key[0], key[1], key[2], key[3])
+                    return
+        finally:
+            self._suppress_tree_select = False
+
+    def _cancel_detail(self):
+        if self._alloc_db_id is not None:
+            session = get_session()
+            try:
+                allocation = session.query(ProjectAllocation).filter(ProjectAllocation.id == self._alloc_db_id).first()
+                if allocation:
+                    self._apply_allocation_to_form(allocation)
+            finally:
+                session.close()
+        else:
+            sel = self.tree.selection()
+            if sel:
+                self._on_tree_select()
+            else:
+                self._clear_detail_form(new_mode=True)
+
+    def load_allocations(self):
+        """Load project allocations from database"""
+        keep_id = self._alloc_db_id
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        try:
+            session = get_session()
+            allocations = session.query(ProjectAllocation).all()
+            count = 0
+            for allocation in allocations:
+                item_id = self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        allocation.manager_code,
+                        allocation.year,
+                        allocation.cost_center,
+                        allocation.work_code,
+                        allocation.jan,
+                        allocation.feb,
+                        allocation.mar,
+                        allocation.apr,
+                        allocation.may,
+                        allocation.jun,
+                        allocation.jul,
+                        allocation.aug,
+                        allocation.sep,
+                        allocation.oct,
+                        allocation.nov,
+                        allocation.dec,
+                    ),
+                )
+                self.tree.item(item_id, tags=("evenrow",) if count % 2 == 1 else ("oddrow",))
+                count += 1
+            self.tree.tag_configure("oddrow", background=COLORS["white"])
+            self.tree.tag_configure("evenrow", background=COLORS["table_row_alt"])
+            session.close()
+            if keep_id is not None:
+                if self._tree_has_db_row(keep_id):
+                    self._select_tree_row_by_db_id(keep_id)
+                else:
+                    self._clear_detail_form(new_mode=True)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load allocations: {str(e)}")
+
+    def _tree_has_db_row(self, alloc_id):
+        session = get_session()
+        try:
+            return session.query(ProjectAllocation).filter(ProjectAllocation.id == alloc_id).first() is not None
+        finally:
+            session.close()
+
+    def add_allocation(self):
+        self._suppress_tree_select = True
+        try:
+            self.tree.selection_remove(self.tree.selection())
+        except tk.TclError:
+            pass
+        self._suppress_tree_select = False
+        self._refresh_manager_list()
+        self._clear_detail_form(new_mode=True)
+
+    def edit_allocation(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an allocation to edit.")
+            return
+        v = self.tree.item(selected[0])["values"]
+        self._load_allocation_by_key(v[0], v[1], v[2], v[3])
+
+    def delete_allocation(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Warning", "Please select an allocation to delete.")
+            return
+        if not messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this allocation?"):
+            return
+        v = self.tree.item(selected[0])["values"]
+        try:
+            session = get_session()
+            allocation = (
+                session.query(ProjectAllocation)
+                .filter(
+                    ProjectAllocation.manager_code == v[0],
+                    ProjectAllocation.year == v[1],
+                    ProjectAllocation.cost_center == v[2],
+                    ProjectAllocation.work_code == v[3],
+                )
+                .first()
+            )
             if allocation:
+                deleted_id = allocation.id
                 session.delete(allocation)
                 session.commit()
-            
+                if self._alloc_db_id == deleted_id:
+                    self._clear_detail_form(new_mode=True)
+                self.load_allocations()
+                messagebox.showinfo("Success", "Allocation deleted successfully.")
+            else:
+                messagebox.showerror("Error", "Allocation not found.")
             session.close()
-            
-            # Reload allocations
-            self.load_allocations()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to delete allocation: {str(e)}")
 
-class ProjectAllocationDialog(tk.Toplevel):
-    def __init__(self, parent, manager_code, year, allocation=None):
-        super().__init__(parent)
-        self.parent = parent
-        self.manager_code = manager_code
-        self.year = year
-        self.allocation = allocation
-        self.result = None
-        
-        # Make dialog modal
-        self.transient(parent)
-        self.grab_set()
-        
-        self.title("Project Allocation")
-        self.geometry("800x600")
-        self.resizable(True, True)
-        
-        # Create form
-        frame = ttk.Frame(self, padding="10")
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Manager and Year info
-        info_frame = ttk.LabelFrame(frame, text="Allocation Info", padding="10")
-        info_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        # Manager selection
-        ttk.Label(info_frame, text="Manager Code:").pack(side=tk.LEFT, padx=5)
-        self.manager_var = tk.StringVar(value=manager_code if manager_code else "")
-        self.manager_combo = ttk.Combobox(info_frame, textvariable=self.manager_var, width=20, state="readonly")
-        self.manager_combo.pack(side=tk.LEFT, padx=5)
-        
-        # Year selection
-        ttk.Label(info_frame, text="Year:").pack(side=tk.LEFT, padx=5)
-        self.year_var = tk.StringVar(value=str(year))
-        years = [str(y) for y in range(datetime.now().year - 2, datetime.now().year + 3)]
-        self.year_combo = ttk.Combobox(info_frame, textvariable=self.year_var, values=years, width=6, state="readonly")
-        self.year_combo.pack(side=tk.LEFT, padx=5)
-        
-        # Project details
-        project_frame = ttk.LabelFrame(frame, text="Project Details", padding="10")
-        project_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        ttk.Label(project_frame, text="Cost Center:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.cost_center_var = tk.StringVar()
-        ttk.Entry(project_frame, textvariable=self.cost_center_var, width=20).grid(row=0, column=1, sticky=tk.W, pady=5)
-        
-        ttk.Label(project_frame, text="Work Code:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.work_code_var = tk.StringVar()
-        ttk.Entry(project_frame, textvariable=self.work_code_var, width=20).grid(row=1, column=1, sticky=tk.W, pady=5)
-        
-        # Monthly allocations
-        allocation_frame = ttk.LabelFrame(frame, text="Monthly Allocations", padding="10")
-        allocation_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        # Create month spinboxes
-        self.spinboxes = {}
-        months = [
-            ("January", "jan"), ("February", "feb"), ("March", "mar"),
-            ("April", "apr"), ("May", "may"), ("June", "jun"),
-            ("July", "jul"), ("August", "aug"), ("September", "sep"),
-            ("October", "oct"), ("November", "nov"), ("December", "dec")
-        ]
-        
-        # Create a frame for the spinboxes
-        spinbox_frame = ttk.Frame(allocation_frame)
-        spinbox_frame.pack(fill=tk.X, pady=5)
-        
-        for i, (month_name, month_code) in enumerate(months):
-            row = i // 3
-            col = i % 3
-            
-            month_frame = ttk.Frame(spinbox_frame)
-            month_frame.grid(row=row, column=col, padx=5, pady=5, sticky=tk.W)
-            
-            ttk.Label(month_frame, text=f"{month_name}:").pack(side=tk.LEFT)
-            spinbox = ttk.Spinbox(month_frame, from_=0, to=100, increment=0.5, width=10)
-            spinbox.pack(side=tk.LEFT, padx=5)
-            self.spinboxes[month_code] = spinbox
-        
-        # Add paste button
-        paste_frame = ttk.Frame(allocation_frame)
-        paste_frame.pack(fill=tk.X, pady=10)
-        ttk.Button(paste_frame, text="Paste Monthly Values", command=self.paste_values).pack(side=tk.LEFT, padx=5)
-        
-        # Buttons
-        button_frame = ttk.Frame(frame)
-        button_frame.pack(pady=10)
-        
-        ttk.Button(button_frame, text="OK", command=self.on_ok, width=10).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Cancel", command=self.on_cancel, width=10).pack(side=tk.LEFT, padx=5)
-        
-        # Load manager codes
-        session = get_session()
-        managers = session.query(Employee.manager_code).distinct().all()
-        self.manager_combo['values'] = [m[0] for m in managers]
-        session.close()
-        
-        # If editing, populate fields
-        if allocation:
-            self.manager_var.set(allocation.manager_code)
-            self.year_var.set(str(allocation.year))
-            self.cost_center_var.set(allocation.cost_center)
-            self.work_code_var.set(allocation.work_code)
-            
-            # Set monthly values
-            self.spinboxes["jan"].set(allocation.jan or 0)
-            self.spinboxes["feb"].set(allocation.feb or 0)
-            self.spinboxes["mar"].set(allocation.mar or 0)
-            self.spinboxes["apr"].set(allocation.apr or 0)
-            self.spinboxes["may"].set(allocation.may or 0)
-            self.spinboxes["jun"].set(allocation.jun or 0)
-            self.spinboxes["jul"].set(allocation.jul or 0)
-            self.spinboxes["aug"].set(allocation.aug or 0)
-            self.spinboxes["sep"].set(allocation.sep or 0)
-            self.spinboxes["oct"].set(allocation.oct or 0)
-            self.spinboxes["nov"].set(allocation.nov or 0)
-            self.spinboxes["dec"].set(allocation.dec or 0)
-        
-        # Center the dialog
-        self.center_on_parent()
-    
-    def paste_values(self):
-        """Paste values from clipboard into monthly spinboxes"""
-        try:
-            clipboard = self.clipboard_get()
-            values = clipboard.strip().split()
-            
-            # Convert and validate values
-            float_values = []
-            for val in values:
-                try:
-                    # Handle both comma and tab delimiters
-                    val = val.replace(',', '').strip()
-                    float_val = float(val)
-                    if float_val < 0 or float_val > 100:
-                        raise ValueError(f"Value {float_val} is out of range (0-100)")
-                    float_values.append(float_val)
-                except ValueError as e:
-                    messagebox.showerror("Error", f"Invalid value: {val}\nPlease ensure all values are numbers between 0 and 100.")
-                    return
-            
-            # Check if we have exactly 12 values
-            if len(float_values) != 12:
-                messagebox.showerror("Error", f"Expected 12 values, got {len(float_values)}.\nPlease copy exactly 12 monthly values.")
-                return
-            
-            # Set the values in the spinboxes
-            months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 
-                     'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
-            for month, value in zip(months, float_values):
-                self.spinboxes[month].set(f"{value:.1f}")
-            
-            messagebox.showinfo("Success", "Values pasted successfully!")
-            
-        except tk.TclError:
-            messagebox.showerror("Error", "No data in clipboard. Please copy values first.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to paste values: {str(e)}")
-    
-    def center_on_parent(self):
-        """Center the dialog on its parent window"""
-        self.update_idletasks()
-        
-        # Get parent geometry
-        parent_width = self.parent.winfo_width()
-        parent_height = self.parent.winfo_height()
-        parent_x = self.parent.winfo_rootx()
-        parent_y = self.parent.winfo_rooty()
-        
-        # Calculate position
-        width = self.winfo_width()
-        height = self.winfo_height()
-        
-        x = parent_x + (parent_width - width) // 2
-        y = parent_y + (parent_height - height) // 2
-        
-        # Set position only (preserve size)
-        self.geometry(f"+{x}+{y}")
-    
-    def on_ok(self):
-        try:
-            # Validate required fields
-            if not self.manager_var.get():
-                raise ValueError("Manager Code is required")
-            if not self.year_var.get():
-                raise ValueError("Year is required")
-            if not self.cost_center_var.get().strip():
-                raise ValueError("Cost Center is required")
-            if not self.work_code_var.get().strip():
-                raise ValueError("Work Code is required")
-            
-            # Get monthly values
-            monthly_values = {}
-            for month, spinbox in self.spinboxes.items():
-                try:
-                    monthly_values[month] = float(spinbox.get())
-                except ValueError:
-                    raise ValueError(f"Invalid value for {month}")
-            
-            self.result = {
-                "manager_code": self.manager_var.get(),
-                "year": int(self.year_var.get()),
-                "cost_center": self.cost_center_var.get().strip(),
-                "work_code": self.work_code_var.get().strip(),
-                **monthly_values
-            }
-            self.destroy()
-        except ValueError as e:
-            messagebox.showerror("Error", str(e))
-    
-    def on_cancel(self):
-        """Cancel dialog"""
-        self.result = None
-        self.destroy()
-    
-    def get_allocations(self):
-        return self.result
 
 class ForecastVisualization(ttk.Frame):
     def __init__(self, parent):
@@ -1546,274 +1655,465 @@ class ForecastVisualization(ttk.Frame):
         ax.grid(True, linestyle='--', alpha=0.7)
 
 class ForecastTab(ttk.Frame):
+    _MONTH_KEYS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
     def __init__(self, parent):
         super().__init__(parent)
-        
-        # Create toolbar
+        self._forecast_id = None
+        self._detail_canvas = None
+        self._suppress_tree_select = False
+        self._fc_spinboxes = {}
+
         toolbar = ttk.Frame(self)
         toolbar.pack(fill=tk.X, padx=5, pady=5)
-        
-        # Add Calculate Forecast button with prominent styling
-        calculate_btn = ttk.Button(toolbar, text="Calculate Forecast", command=self.calculate_forecast, style='Primary.TButton')
-        calculate_btn.pack(side=tk.LEFT, padx=2)
-        
+
+        ttk.Button(toolbar, text="Calculate Forecast", command=self.calculate_forecast, style="Primary.TButton").pack(
+            side=tk.LEFT, padx=2
+        )
         ttk.Button(toolbar, text="Add Forecast", command=self.add_forecast).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="Edit Forecast", command=self.edit_forecast).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="Delete Forecast", command=self.delete_forecast).pack(side=tk.LEFT, padx=2)
         ttk.Button(toolbar, text="Refresh", command=self.load_forecasts).pack(side=tk.LEFT, padx=2)
-        
-        # Year filter
+
         year_frame = ttk.Frame(toolbar)
         year_frame.pack(side=tk.RIGHT, padx=5)
-        
+
         ttk.Label(year_frame, text="Year:").pack(side=tk.LEFT, padx=2)
         self.year_var = tk.StringVar(value=str(datetime.now().year))
         year_combo = ttk.Combobox(
-            year_frame, 
+            year_frame,
             textvariable=self.year_var,
             values=[str(y) for y in range(datetime.now().year - 2, datetime.now().year + 5)],
             width=6,
-            state="readonly"
+            state="readonly",
         )
         year_combo.pack(side=tk.LEFT, padx=2)
         year_combo.bind("<<ComboboxSelected>>", lambda e: self.load_forecasts())
-        
-        # Create treeview with scrollbar
-        self.tree_frame = ttk.Frame(self)
-        self.tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        self.tree = ttk.Treeview(self.tree_frame, columns=(
-            "id", "manager_code", "cost_center", "work_code",
-            "jan", "feb", "mar", "apr", "may", "jun",
-            "jul", "aug", "sep", "oct", "nov", "dec", "total"
-        ), show="headings")
-        
-        # Add scrollbar
-        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
+
+        self.paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
+        self.paned.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        left_frame = ttk.Frame(self.paned)
+        self.paned.add(left_frame, weight=2)
+
+        self.tree_frame = ttk.Frame(left_frame)
+        self.tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(self.tree_frame, orient=tk.VERTICAL, command=self.tree_yview)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-        
-        # Configure columns
+
+        self.tree = ttk.Treeview(
+            self.tree_frame,
+            columns=(
+                "id",
+                "manager_code",
+                "cost_center",
+                "work_code",
+                "jan",
+                "feb",
+                "mar",
+                "apr",
+                "may",
+                "jun",
+                "jul",
+                "aug",
+                "sep",
+                "oct",
+                "nov",
+                "dec",
+                "total",
+            ),
+            show="headings",
+            yscrollcommand=scrollbar.set,
+        )
+
         self.tree.heading("id", text="ID")
         self.tree.heading("manager_code", text="Manager")
         self.tree.heading("cost_center", text="Cost Center")
         self.tree.heading("work_code", text="Work Code")
-        self.tree.heading("jan", text="Jan")
-        self.tree.heading("feb", text="Feb")
-        self.tree.heading("mar", text="Mar")
-        self.tree.heading("apr", text="Apr")
-        self.tree.heading("may", text="May")
-        self.tree.heading("jun", text="Jun")
-        self.tree.heading("jul", text="Jul")
-        self.tree.heading("aug", text="Aug")
-        self.tree.heading("sep", text="Sep")
-        self.tree.heading("oct", text="Oct")
-        self.tree.heading("nov", text="Nov")
-        self.tree.heading("dec", text="Dec")
+        for m in self._MONTH_KEYS:
+            self.tree.heading(m, text=m[:3].title())
         self.tree.heading("total", text="Total")
-        
-        # Set column widths
+
         self.tree.column("id", width=50)
-        self.tree.column("manager_code", width=80)
-        self.tree.column("cost_center", width=80)
-        self.tree.column("work_code", width=80)
-        for month in ["jan", "feb", "mar", "apr", "may", "jun",
-                     "jul", "aug", "sep", "oct", "nov", "dec"]:
-            self.tree.column(month, width=50)
-        self.tree.column("total", width=70)
-        
+        self.tree.column("manager_code", width=72)
+        self.tree.column("cost_center", width=72)
+        self.tree.column("work_code", width=72)
+        for m in self._MONTH_KEYS:
+            self.tree.column(m, width=44)
+        self.tree.column("total", width=64)
+
         self.tree.pack(fill=tk.BOTH, expand=True)
-        
-        # Load forecasts
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+
+        right_outer = ttk.Frame(self.paned, padding=(8, 0, 0, 0))
+        self.paned.add(right_outer, weight=1)
+
+        self.detail_title_var = tk.StringVar(value="Forecast")
+        self._detail_canvas, form = master_detail_scroll_setup(right_outer, self.detail_title_var, "Forecast")
+
+        form.columnconfigure(1, weight=1)
+        info_frame = ttk.LabelFrame(form, text="Forecast info", padding=8)
+        info_frame.grid(row=0, column=0, columnspan=2, sticky=tk.EW, pady=(0, 8))
+        info_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(info_frame, text="Manager Code:").grid(row=0, column=0, sticky=tk.W, pady=4)
+        self.manager_var = tk.StringVar()
+        self.managers_combo = ttk.Combobox(info_frame, textvariable=self.manager_var, width=20)
+        self.managers_combo.grid(row=0, column=1, sticky=tk.W, pady=4)
+
+        ttk.Label(info_frame, text="Year:").grid(row=1, column=0, sticky=tk.W, pady=4)
+        self.forecast_year_var = tk.StringVar(value=str(datetime.now().year))
+        fy = [str(y) for y in range(datetime.now().year - 2, datetime.now().year + 5)]
+        ttk.Combobox(info_frame, textvariable=self.forecast_year_var, values=fy, width=8).grid(
+            row=1, column=1, sticky=tk.W, pady=4
+        )
+
+        ttk.Label(info_frame, text="Cost Center:").grid(row=2, column=0, sticky=tk.W, pady=4)
+        self.cost_center_var = tk.StringVar()
+        ttk.Entry(info_frame, textvariable=self.cost_center_var, width=22).grid(row=2, column=1, sticky=tk.EW, pady=4)
+
+        ttk.Label(info_frame, text="Work Code:").grid(row=3, column=0, sticky=tk.W, pady=4)
+        self.work_code_var = tk.StringVar()
+        ttk.Entry(info_frame, textvariable=self.work_code_var, width=22).grid(row=3, column=1, sticky=tk.EW, pady=4)
+
+        hours_frame = ttk.LabelFrame(form, text="Monthly hours", padding=8)
+        hours_frame.grid(row=1, column=0, columnspan=2, sticky=tk.EW, pady=(0, 4))
+
+        spinbox_frame = ttk.Frame(hours_frame)
+        spinbox_frame.pack(fill=tk.X, pady=4)
+
+        month_labels = [
+            ("January", "jan"),
+            ("February", "feb"),
+            ("March", "mar"),
+            ("April", "apr"),
+            ("May", "may"),
+            ("June", "jun"),
+            ("July", "jul"),
+            ("August", "aug"),
+            ("September", "sep"),
+            ("October", "oct"),
+            ("November", "nov"),
+            ("December", "dec"),
+        ]
+        for i, (month_name, month_code) in enumerate(month_labels):
+            row, col = i // 3, i % 3
+            mf = ttk.Frame(spinbox_frame)
+            mf.grid(row=row, column=col, padx=4, pady=4, sticky=tk.W)
+            ttk.Label(mf, text=f"{month_name}:").pack(side=tk.LEFT)
+            sb = ttk.Spinbox(mf, from_=0, to=1000, increment=0.5, width=8)
+            sb.pack(side=tk.LEFT, padx=4)
+            self._fc_spinboxes[month_code] = sb
+
+        button_bar = ttk.Frame(right_outer)
+        button_bar.grid(row=2, column=0, columnspan=2, sticky=tk.EW, pady=(10, 0))
+        ttk.Button(button_bar, text="Save", command=self._save_detail, width=10).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(button_bar, text="Cancel", command=self._cancel_detail, width=10).pack(side=tk.RIGHT, padx=4)
+
+        self.bind("<Destroy>", self._fc_on_destroy)
+        self.after_idle(self._fc_set_initial_sash)
+        self._refresh_manager_list()
         self.load_forecasts()
-    
+        self._clear_detail_form(new_mode=True)
+
+    def tree_yview(self, *args):
+        self.tree.yview(*args)
+
+    def _fc_set_initial_sash(self):
+        try:
+            self.paned.sashpos(0, 560)
+        except tk.TclError:
+            pass
+
+    def _fc_on_destroy(self, event):
+        if event.widget is not self:
+            return
+        try:
+            if self._detail_canvas is not None:
+                self._detail_canvas.unbind_all("<MouseWheel>")
+        except tk.TclError:
+            pass
+
+    def _refresh_manager_list(self):
+        session = get_session()
+        try:
+            managers = session.query(Employee.manager_code).distinct().all()
+            self.managers_combo["values"] = [m[0] for m in managers if m[0]]
+        finally:
+            session.close()
+
+    def _clear_detail_form(self, new_mode=False):
+        self._forecast_id = None
+        self.detail_title_var.set("New forecast" if new_mode else "Forecast")
+        self.manager_var.set("")
+        self.forecast_year_var.set(self.year_var.get())
+        self.cost_center_var.set("")
+        self.work_code_var.set("")
+        for mk in self._MONTH_KEYS:
+            self._fc_spinboxes[mk].set(0)
+
+    def _apply_forecast_to_form(self, forecast):
+        self._forecast_id = forecast.id
+        self.detail_title_var.set(f"Forecast #{forecast.id}")
+        self.manager_var.set(forecast.manager_code or "")
+        self.forecast_year_var.set(str(forecast.year))
+        self.cost_center_var.set(forecast.cost_center or "")
+        self.work_code_var.set(forecast.work_code or "")
+        self._fc_spinboxes["jan"].set(forecast.jan or 0)
+        self._fc_spinboxes["feb"].set(forecast.feb or 0)
+        self._fc_spinboxes["mar"].set(forecast.mar or 0)
+        self._fc_spinboxes["apr"].set(forecast.apr or 0)
+        self._fc_spinboxes["may"].set(forecast.may or 0)
+        self._fc_spinboxes["jun"].set(forecast.jun or 0)
+        self._fc_spinboxes["jul"].set(forecast.jul or 0)
+        self._fc_spinboxes["aug"].set(forecast.aug or 0)
+        self._fc_spinboxes["sep"].set(forecast.sep or 0)
+        self._fc_spinboxes["oct"].set(forecast.oct or 0)
+        self._fc_spinboxes["nov"].set(forecast.nov or 0)
+        self._fc_spinboxes["dec"].set(forecast.dec or 0)
+
+    def _load_forecast_by_id(self, forecast_id):
+        session = get_session()
+        try:
+            forecast = session.query(Forecast).filter(Forecast.id == forecast_id).first()
+            if forecast:
+                self._apply_forecast_to_form(forecast)
+            else:
+                messagebox.showerror("Error", "Forecast not found.")
+                self._clear_detail_form(new_mode=True)
+        finally:
+            session.close()
+
+    def _on_tree_select(self, _event=None):
+        if self._suppress_tree_select:
+            return
+        selected = self.tree.selection()
+        if not selected:
+            return
+        forecast_id = self.tree.item(selected[0])["values"][0]
+        self._load_forecast_by_id(forecast_id)
+
+    def _collect_detail_payload(self):
+        if not self.manager_var.get():
+            raise ValueError("Manager Code is required")
+        if not self.forecast_year_var.get():
+            raise ValueError("Year is required")
+        if not self.cost_center_var.get().strip():
+            raise ValueError("Cost Center is required")
+        if not self.work_code_var.get().strip():
+            raise ValueError("Work Code is required")
+        monthly = {}
+        for month, spinbox in self._fc_spinboxes.items():
+            try:
+                monthly[month] = float(spinbox.get())
+            except ValueError:
+                raise ValueError(f"Invalid value for {month}")
+        return {
+            "manager_code": self.manager_var.get(),
+            "year": int(self.forecast_year_var.get()),
+            "cost_center": self.cost_center_var.get().strip(),
+            "work_code": self.work_code_var.get().strip(),
+            **monthly,
+        }
+
+    def _save_detail(self):
+        try:
+            data = self._collect_detail_payload()
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+            return
+        total_hours = sum(data[m] for m in self._MONTH_KEYS)
+        try:
+            session = get_session()
+            if self._forecast_id is None:
+                forecast = Forecast(
+                    year=data["year"],
+                    manager_code=data["manager_code"],
+                    cost_center=data["cost_center"],
+                    work_code=data["work_code"],
+                    jan=data["jan"],
+                    feb=data["feb"],
+                    mar=data["mar"],
+                    apr=data["apr"],
+                    may=data["may"],
+                    jun=data["jun"],
+                    jul=data["jul"],
+                    aug=data["aug"],
+                    sep=data["sep"],
+                    oct=data["oct"],
+                    nov=data["nov"],
+                    dec=data["dec"],
+                    total_hours=total_hours,
+                )
+                session.add(forecast)
+                session.commit()
+                new_id = forecast.id
+                session.close()
+                self._refresh_manager_list()
+                self.load_forecasts()
+                self._select_tree_row_by_id(new_id)
+                messagebox.showinfo("Success", "Forecast added successfully.")
+            else:
+                forecast = session.query(Forecast).filter(Forecast.id == self._forecast_id).first()
+                if not forecast:
+                    session.close()
+                    messagebox.showerror("Error", "Forecast not found.")
+                    return
+                forecast.year = data["year"]
+                forecast.manager_code = data["manager_code"]
+                forecast.cost_center = data["cost_center"]
+                forecast.work_code = data["work_code"]
+                forecast.jan = data["jan"]
+                forecast.feb = data["feb"]
+                forecast.mar = data["mar"]
+                forecast.apr = data["apr"]
+                forecast.may = data["may"]
+                forecast.jun = data["jun"]
+                forecast.jul = data["jul"]
+                forecast.aug = data["aug"]
+                forecast.sep = data["sep"]
+                forecast.oct = data["oct"]
+                forecast.nov = data["nov"]
+                forecast.dec = data["dec"]
+                forecast.total_hours = total_hours
+                session.commit()
+                fid = self._forecast_id
+                session.close()
+                self._refresh_manager_list()
+                self.load_forecasts()
+                self._select_tree_row_by_id(fid)
+                messagebox.showinfo("Success", "Forecast updated successfully.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save forecast: {str(e)}")
+
+    def _select_tree_row_by_id(self, forecast_id):
+        self._suppress_tree_select = True
+        try:
+            for item in self.tree.get_children():
+                if self.tree.item(item)["values"][0] == forecast_id:
+                    self.tree.selection_set(item)
+                    self.tree.see(item)
+                    self._load_forecast_by_id(forecast_id)
+                    return
+        finally:
+            self._suppress_tree_select = False
+
+    def _cancel_detail(self):
+        if self._forecast_id is not None:
+            self._load_forecast_by_id(self._forecast_id)
+        else:
+            sel = self.tree.selection()
+            if sel:
+                self._on_tree_select()
+            else:
+                self._clear_detail_form(new_mode=True)
+
     def load_forecasts(self):
         """Load forecasts from database"""
+        keep_id = self._forecast_id
+        for item in self.tree.get_children():
+            self.tree.delete(item)
         try:
-            # Clear existing items
-            for item in self.tree.get_children():
-                self.tree.delete(item)
-            
             session = get_session()
             year = int(self.year_var.get())
             forecasts = session.query(Forecast).filter(Forecast.year == year).all()
-            
+            count = 0
             for forecast in forecasts:
-                total = sum([
-                    forecast.jan, forecast.feb, forecast.mar, 
-                    forecast.apr, forecast.may, forecast.jun,
-                    forecast.jul, forecast.aug, forecast.sep,
-                    forecast.oct, forecast.nov, forecast.dec
-                ])
-                
-                self.tree.insert("", tk.END, values=(
-                    forecast.id,
-                    forecast.manager_code,
-                    forecast.cost_center,
-                    forecast.work_code,
-                    forecast.jan,
-                    forecast.feb,
-                    forecast.mar,
-                    forecast.apr,
-                    forecast.may,
-                    forecast.jun,
-                    forecast.jul,
-                    forecast.aug,
-                    forecast.sep,
-                    forecast.oct,
-                    forecast.nov,
-                    forecast.dec,
-                    total
-                ))
-            
+                total = sum(
+                    [
+                        forecast.jan,
+                        forecast.feb,
+                        forecast.mar,
+                        forecast.apr,
+                        forecast.may,
+                        forecast.jun,
+                        forecast.jul,
+                        forecast.aug,
+                        forecast.sep,
+                        forecast.oct,
+                        forecast.nov,
+                        forecast.dec,
+                    ]
+                )
+                item_id = self.tree.insert(
+                    "",
+                    tk.END,
+                    values=(
+                        forecast.id,
+                        forecast.manager_code,
+                        forecast.cost_center,
+                        forecast.work_code,
+                        forecast.jan,
+                        forecast.feb,
+                        forecast.mar,
+                        forecast.apr,
+                        forecast.may,
+                        forecast.jun,
+                        forecast.jul,
+                        forecast.aug,
+                        forecast.sep,
+                        forecast.oct,
+                        forecast.nov,
+                        forecast.dec,
+                        total,
+                    ),
+                )
+                self.tree.item(item_id, tags=("evenrow",) if count % 2 == 1 else ("oddrow",))
+                count += 1
+            self.tree.tag_configure("oddrow", background=COLORS["white"])
+            self.tree.tag_configure("evenrow", background=COLORS["table_row_alt"])
             session.close()
+            if keep_id is not None:
+                if any(self.tree.item(i)["values"][0] == keep_id for i in self.tree.get_children()):
+                    self._select_tree_row_by_id(keep_id)
+                else:
+                    self._clear_detail_form(new_mode=True)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load forecasts: {str(e)}")
-    
+
     def add_forecast(self):
-        """Add a new forecast"""
-        dialog = ForecastDialog(self, None)
-        self.wait_window(dialog)
-        
-        if dialog.result:
-            try:
-                session = get_session()
-                
-                # Calculate total
-                total_hours = sum([
-                    dialog.result["jan"], dialog.result["feb"], dialog.result["mar"],
-                    dialog.result["apr"], dialog.result["may"], dialog.result["jun"],
-                    dialog.result["jul"], dialog.result["aug"], dialog.result["sep"],
-                    dialog.result["oct"], dialog.result["nov"], dialog.result["dec"]
-                ])
-                
-                # Create new forecast
-                forecast = Forecast(
-                    year=dialog.result["year"],
-                    manager_code=dialog.result["manager_code"],
-                    cost_center=dialog.result["cost_center"],
-                    work_code=dialog.result["work_code"],
-                    jan=dialog.result["jan"],
-                    feb=dialog.result["feb"],
-                    mar=dialog.result["mar"],
-                    apr=dialog.result["apr"],
-                    may=dialog.result["may"],
-                    jun=dialog.result["jun"],
-                    jul=dialog.result["jul"],
-                    aug=dialog.result["aug"],
-                    sep=dialog.result["sep"],
-                    oct=dialog.result["oct"],
-                    nov=dialog.result["nov"],
-                    dec=dialog.result["dec"],
-                    total_hours=total_hours
-                )
-                
-                session.add(forecast)
-                session.commit()
-                session.close()
-                
-                # Reload forecasts
-                self.load_forecasts()
-                
-                messagebox.showinfo("Success", "Forecast added successfully.")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to add forecast: {str(e)}")
-    
+        self._suppress_tree_select = True
+        try:
+            self.tree.selection_remove(self.tree.selection())
+        except tk.TclError:
+            pass
+        self._suppress_tree_select = False
+        self._refresh_manager_list()
+        self._clear_detail_form(new_mode=True)
+
     def edit_forecast(self):
-        """Edit selected forecast"""
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("Warning", "Please select a forecast to edit.")
             return
-        
-        try:
-            # Get ID of selected forecast
-            forecast_id = self.tree.item(selected[0])["values"][0]
-            
-            session = get_session()
-            forecast = session.query(Forecast).filter(Forecast.id == forecast_id).first()
-            
-            if not forecast:
-                session.close()
-                messagebox.showerror("Error", "Selected forecast not found.")
-                return
-            
-            # Create dialog
-            dialog = ForecastDialog(self, forecast)
-            self.wait_window(dialog)
-            
-            if dialog.result:
-                # Calculate total
-                total_hours = sum([
-                    dialog.result["jan"], dialog.result["feb"], dialog.result["mar"],
-                    dialog.result["apr"], dialog.result["may"], dialog.result["jun"],
-                    dialog.result["jul"], dialog.result["aug"], dialog.result["sep"],
-                    dialog.result["oct"], dialog.result["nov"], dialog.result["dec"]
-                ])
-                
-                # Update forecast
-                forecast.year = dialog.result["year"]
-                forecast.manager_code = dialog.result["manager_code"]
-                forecast.cost_center = dialog.result["cost_center"]
-                forecast.work_code = dialog.result["work_code"]
-                forecast.jan = dialog.result["jan"]
-                forecast.feb = dialog.result["feb"]
-                forecast.mar = dialog.result["mar"]
-                forecast.apr = dialog.result["apr"]
-                forecast.may = dialog.result["may"]
-                forecast.jun = dialog.result["jun"]
-                forecast.jul = dialog.result["jul"]
-                forecast.aug = dialog.result["aug"]
-                forecast.sep = dialog.result["sep"]
-                forecast.oct = dialog.result["oct"]
-                forecast.nov = dialog.result["nov"]
-                forecast.dec = dialog.result["dec"]
-                forecast.total_hours = total_hours
-                
-                session.commit()
-                session.close()
-                
-                # Reload forecasts
-                self.load_forecasts()
-                
-                messagebox.showinfo("Success", "Forecast updated successfully.")
-            else:
-                session.close()
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to edit forecast: {str(e)}")
-    
+        forecast_id = self.tree.item(selected[0])["values"][0]
+        self._load_forecast_by_id(forecast_id)
+
     def delete_forecast(self):
-        """Delete selected forecast"""
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("Warning", "Please select a forecast to delete.")
             return
-        
         if not messagebox.askyesno("Confirm Delete", "Are you sure you want to delete this forecast?"):
             return
-        
+        forecast_id = self.tree.item(selected[0])["values"][0]
         try:
-            # Get ID of selected forecast
-            forecast_id = self.tree.item(selected[0])["values"][0]
-            
             session = get_session()
             forecast = session.query(Forecast).filter(Forecast.id == forecast_id).first()
-            
             if forecast:
                 session.delete(forecast)
                 session.commit()
-                
-                # Reload forecasts
+                if self._forecast_id == forecast_id:
+                    self._clear_detail_form(new_mode=True)
                 self.load_forecasts()
-                
                 messagebox.showinfo("Success", "Forecast deleted successfully.")
             else:
                 messagebox.showwarning("Warning", "Selected forecast not found.")
-            
             session.close()
         except Exception as e:
             messagebox.showerror("Error", f"Failed to delete forecast: {str(e)}")
-    
+
     def calculate_forecast(self):
         """Automatically calculate forecast based on employee data and allocations"""
         try:
@@ -1973,173 +2273,6 @@ class ForecastTab(ttk.Frame):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to calculate forecast: {str(e)}")
 
-class ForecastDialog(tk.Toplevel):
-    def __init__(self, parent, forecast=None):
-        super().__init__(parent)
-        self.parent = parent
-        self.forecast = forecast
-        self.result = None
-        
-        self.title("Forecast")
-        self.geometry("800x600")
-        self.resizable(True, True)
-        
-        # Make dialog modal
-        self.transient(parent)
-        self.grab_set()
-        
-        # Create form
-        frame = ttk.Frame(self, padding="10")
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Forecast info
-        info_frame = ttk.LabelFrame(frame, text="Forecast Info", padding="10")
-        info_frame.pack(fill=tk.X, pady=(0, 10))
-        
-        # Manager selection
-        ttk.Label(info_frame, text="Manager Code:").grid(row=0, column=0, sticky=tk.W, pady=5)
-        self.manager_var = tk.StringVar(value=forecast.manager_code if forecast else "")
-        managers_combo = ttk.Combobox(info_frame, textvariable=self.manager_var, width=20)
-        managers_combo.grid(row=0, column=1, sticky=tk.W, pady=5)
-        
-        # Year selection
-        ttk.Label(info_frame, text="Year:").grid(row=1, column=0, sticky=tk.W, pady=5)
-        self.year_var = tk.StringVar(value=str(forecast.year if forecast else datetime.now().year))
-        years = [str(y) for y in range(datetime.now().year - 2, datetime.now().year + 5)]
-        ttk.Combobox(info_frame, textvariable=self.year_var, values=years, width=6).grid(row=1, column=1, sticky=tk.W, pady=5)
-        
-        # Cost center
-        ttk.Label(info_frame, text="Cost Center:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.cost_center_var = tk.StringVar(value=forecast.cost_center if forecast else "")
-        ttk.Entry(info_frame, textvariable=self.cost_center_var, width=20).grid(row=2, column=1, sticky=tk.W, pady=5)
-        
-        # Work code
-        ttk.Label(info_frame, text="Work Code:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.work_code_var = tk.StringVar(value=forecast.work_code if forecast else "")
-        ttk.Entry(info_frame, textvariable=self.work_code_var, width=20).grid(row=3, column=1, sticky=tk.W, pady=5)
-        
-        # Monthly allocations
-        allocation_frame = ttk.LabelFrame(frame, text="Monthly Hours", padding="10")
-        allocation_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-        
-        # Create month spinboxes
-        self.spinboxes = {}
-        months = [
-            ("January", "jan"), ("February", "feb"), ("March", "mar"),
-            ("April", "apr"), ("May", "may"), ("June", "jun"),
-            ("July", "jul"), ("August", "aug"), ("September", "sep"),
-            ("October", "oct"), ("November", "nov"), ("December", "dec")
-        ]
-        
-        # Create a frame for the spinboxes
-        spinbox_frame = ttk.Frame(allocation_frame)
-        spinbox_frame.pack(fill=tk.X, pady=5)
-        
-        for i, (month_name, month_code) in enumerate(months):
-            row = i // 3
-            col = i % 3
-            
-            month_frame = ttk.Frame(spinbox_frame)
-            month_frame.grid(row=row, column=col, padx=5, pady=5, sticky=tk.W)
-            
-            ttk.Label(month_frame, text=f"{month_name}:").pack(side=tk.LEFT)
-            spinbox = ttk.Spinbox(month_frame, from_=0, to=1000, increment=0.5, width=10)
-            spinbox.pack(side=tk.LEFT, padx=5)
-            self.spinboxes[month_code] = spinbox
-        
-        # Buttons
-        button_frame = ttk.Frame(frame)
-        button_frame.grid(row=4, column=0, columnspan=2, pady=10)
-        
-        ttk.Button(button_frame, text="OK", command=self.on_ok, width=10).pack(side=tk.LEFT, padx=5)
-        ttk.Button(button_frame, text="Cancel", command=self.on_cancel, width=10).pack(side=tk.LEFT, padx=5)
-        
-        # Load manager codes
-        session = get_session()
-        managers = session.query(Employee.manager_code).distinct().all()
-        managers_combo['values'] = [m[0] for m in managers]
-        session.close()
-        
-        # If editing, populate fields
-        if forecast:
-            self.manager_var.set(forecast.manager_code)
-            self.year_var.set(str(forecast.year))
-            self.cost_center_var.set(forecast.cost_center)
-            self.work_code_var.set(forecast.work_code)
-            
-            # Set monthly values
-            self.spinboxes["jan"].set(forecast.jan or 0)
-            self.spinboxes["feb"].set(forecast.feb or 0)
-            self.spinboxes["mar"].set(forecast.mar or 0)
-            self.spinboxes["apr"].set(forecast.apr or 0)
-            self.spinboxes["may"].set(forecast.may or 0)
-            self.spinboxes["jun"].set(forecast.jun or 0)
-            self.spinboxes["jul"].set(forecast.jul or 0)
-            self.spinboxes["aug"].set(forecast.aug or 0)
-            self.spinboxes["sep"].set(forecast.sep or 0)
-            self.spinboxes["oct"].set(forecast.oct or 0)
-            self.spinboxes["nov"].set(forecast.nov or 0)
-            self.spinboxes["dec"].set(forecast.dec or 0)
-        
-        # Center the dialog
-        self.center_on_parent()
-    
-    def center_on_parent(self):
-        """Center the dialog on its parent window"""
-        self.update_idletasks()
-        
-        # Get parent geometry
-        parent_width = self.parent.winfo_width()
-        parent_height = self.parent.winfo_height()
-        parent_x = self.parent.winfo_rootx()
-        parent_y = self.parent.winfo_rooty()
-        
-        # Calculate position
-        width = self.winfo_width()
-        height = self.winfo_height()
-        
-        x = parent_x + (parent_width - width) // 2
-        y = parent_y + (parent_height - height) // 2
-        
-        # Set position only (preserve size)
-        self.geometry(f"+{x}+{y}")
-    
-    def on_ok(self):
-        try:
-            # Validate required fields
-            if not self.manager_var.get():
-                raise ValueError("Manager Code is required")
-            if not self.year_var.get():
-                raise ValueError("Year is required")
-            if not self.cost_center_var.get().strip():
-                raise ValueError("Cost Center is required")
-            if not self.work_code_var.get().strip():
-                raise ValueError("Work Code is required")
-            
-            # Get monthly values
-            monthly_values = {}
-            for month, spinbox in self.spinboxes.items():
-                try:
-                    monthly_values[month] = float(spinbox.get())
-                except ValueError:
-                    raise ValueError(f"Invalid value for {month}")
-            
-            self.result = {
-                "manager_code": self.manager_var.get(),
-                "year": int(self.year_var.get()),
-                "cost_center": self.cost_center_var.get().strip(),
-                "work_code": self.work_code_var.get().strip(),
-                **monthly_values
-            }
-            self.destroy()
-        except ValueError as e:
-            messagebox.showerror("Error", str(e))
-    
-    def on_cancel(self):
-        """Cancel dialog"""
-        self.result = None
-        self.destroy()
-
 class PlannedChangesTab(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
@@ -2245,43 +2378,9 @@ class PlannedChangesTab(ttk.Frame):
             pass
     
     def _build_detail_pane(self, parent):
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(1, weight=1)
-        
-        self.detail_title_var = tk.StringVar(value="Planned change")
-        ttk.Label(
-            parent,
-            textvariable=self.detail_title_var,
-            font=("Helvetica", 11, "bold"),
-        ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=(0, 6))
-        
-        self._pc_canvas = tk.Canvas(parent, highlightthickness=0)
-        vsb = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self._pc_canvas.yview)
-        self._pc_canvas.configure(yscrollcommand=vsb.set)
-        
-        form = ttk.Frame(self._pc_canvas, padding=(0, 0, 6, 0))
-        inner_win = self._pc_canvas.create_window((0, 0), window=form, anchor=tk.NW)
-        
-        def sync_scroll(_event=None):
-            self._pc_canvas.configure(scrollregion=self._pc_canvas.bbox("all"))
-        
-        def on_canvas_cfg(event):
-            self._pc_canvas.itemconfigure(inner_win, width=event.width)
-        
-        form.bind("<Configure>", sync_scroll)
-        self._pc_canvas.bind("<Configure>", on_canvas_cfg)
-        
-        self._pc_canvas.grid(row=1, column=0, sticky=tk.NSEW)
-        vsb.grid(row=1, column=1, sticky=tk.NS)
-        
-        def on_mw(event):
-            if self._pc_canvas.winfo_containing(event.x_root, event.y_root):
-                self._pc_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-                return "break"
-        
-        self._pc_canvas.bind("<Enter>", lambda _e: self._pc_canvas.bind_all("<MouseWheel>", on_mw))
-        self._pc_canvas.bind("<Leave>", lambda _e: self._pc_canvas.unbind_all("<MouseWheel>"))
-        
+        self.detail_title_var = tk.StringVar()
+        self._pc_canvas, form = master_detail_scroll_setup(parent, self.detail_title_var, "Planned change")
+
         form.columnconfigure(1, weight=1)
         
         ttk.Label(form, text="Description:").grid(row=0, column=0, sticky=tk.W, pady=4)
